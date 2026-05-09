@@ -200,7 +200,7 @@ export class CodexAcpClient {
     }
 
     async resumeSession(request: acp.ResumeSessionRequest): Promise<SessionMetadata> {
-        await this.refreshSkills(request.cwd, request._meta);
+        await this.refreshSkills(request.cwd);
 
         const response = await this.codexClient.threadResume({
             approvalPolicy: null,
@@ -247,7 +247,7 @@ export class CodexAcpClient {
     }
 
     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
-        await this.refreshSkills(request.cwd, request._meta);
+        await this.refreshSkills(request.cwd);
 
         const response = await this.codexClient.threadStart({
             config: this.createSessionConfig(request.cwd, request.mcpServers),
@@ -310,18 +310,13 @@ export class CodexAcpClient {
         return this.getModelProvider() ?? "openai";
     }
 
-    private async refreshSkills(cwd: string, meta?: Record<string, unknown> | null): Promise<void> {
+    private async refreshSkills(cwd: string): Promise<void> {
         if (!cwd) {
             return;
         }
-        const additionalRoots = readAdditionalRoots(meta);
         await this.codexClient.listSkills({
             cwds: [cwd],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: cwd,
-                extraUserRoots: additionalRoots
-            }]
         });
     }
 
@@ -382,7 +377,7 @@ export class CodexAcpClient {
         const input = buildPromptItems(request.prompt);
         const effort = modelId.effort as ReasoningEffort | null; //TODO remove unsafe conversion
 
-        await this.refreshSkills(cwd, request._meta);
+        await this.refreshSkills(cwd);
         return await this.codexClient.runTurn({
             outputSchema: null,
             threadId: request.sessionId,
@@ -639,18 +634,6 @@ interface GatewayConfig {
         http_headers: Record<string, string>,
         wire_api: "responses"
     }
-}
-
-function readAdditionalRoots(meta: Record<string, unknown> | null | undefined): string[] {
-    const rawRoots = meta?.["additionalRoots"];
-    if (!Array.isArray(rawRoots)) {
-        return [];
-    }
-
-    return Array.from(new Set(rawRoots
-        .filter((value): value is string => typeof value === "string")
-        .map(value => value.trim())
-        .filter(value => value.length > 0)));
 }
 
 function mergeGatewayConfig(config: JsonObject, gatewayConfig: GatewayConfig | null): JsonObject {
