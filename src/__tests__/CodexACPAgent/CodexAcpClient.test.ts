@@ -397,6 +397,33 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(listSkillsSpy.mock.invocationCallOrder[0]!).toBeLessThan(turnStartSpy.mock.invocationCallOrder[0]!);
     });
 
+    it('passes provided skill resource links as prompt skill items', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        const runTurnSpy = vi.spyOn(codexAppServerClient, "runTurn").mockResolvedValue({
+            threadId: "session-id",
+            turn: createTurn("turn-id", "completed"),
+        } as any);
+
+        await codexAcpClient.sendPrompt({
+            sessionId: "session-id",
+            prompt: [
+                {type: "text", text: "$extra-skill do the work"},
+                {type: "resource_link", name: "extra-skill", uri: "file:///skills/extra-skill/SKILL.md"},
+            ],
+        }, AgentMode.DEFAULT_AGENT_MODE, ModelId.create("gpt-5", "medium"), false, "/workspace");
+
+        expect(runTurnSpy).toHaveBeenCalledWith(expect.objectContaining({
+            input: [
+                {type: "text", text: "$extra-skill do the work", text_elements: []},
+                {type: "skill", name: "extra-skill", path: "/skills/extra-skill/SKILL.md"},
+            ],
+        }));
+    });
+
     function loadNotifications(){
         //TODO collect logs form dev run and then load them from file to speedup
         const serverNotifications: ServerNotification[] = [

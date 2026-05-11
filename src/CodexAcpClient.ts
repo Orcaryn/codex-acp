@@ -20,6 +20,7 @@ import type {JsonValue} from "./app-server/serde_json/JsonValue";
 import {ModelId} from "./ModelId";
 import {AgentMode} from "./AgentMode";
 import path from "node:path";
+import {fileURLToPath} from "node:url";
 import {logger} from "./Logger";
 import type {
     AccountLoginCompletedNotification,
@@ -36,6 +37,11 @@ import type {
 } from "./app-server/v2";
 import packageJson from "../package.json";
 import type {AuthenticationStatusResponse} from "./AcpExtensions";
+
+const FILE_URI_PREFIX = "file://";
+// From the Codex Rust implementation, `codex-rs/core-skills/src/loader.rs` defines `SKILLS_FILENAME = "SKILL.md"` and only parses files whose discovered filename exactly matches that value. The app-server README and bundled skill-creator sample also document `SKILL.md` as the required file for a skill. There is
+// some UI/mention handling that recognizes paths ending in `SKILL.md`, but the actual loader discovery path is hardcoded around this filename.
+const SKILL_FILE_NAME = "SKILL.md";
 
 /**
  * API for accessing the Codex App Server using ACP requests.
@@ -584,8 +590,13 @@ function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {
                 const url = block.uri ?? `data:${block.mimeType};base64,${block.data}`;
                 return {type: "image", url};
             }
-            case "resource_link":
+            case "resource_link": {
+                const skillInput = buildSkillInput(block);
+                if (skillInput !== null) {
+                    return skillInput;
+                }
                 return {type: "text", text: formatUriAsLink(block.name, block.uri), text_elements: []};
+            }
             case "resource": {
                 const resource = block.resource as EmbeddedResourceResource;
                 if ("text" in resource) {
@@ -605,12 +616,49 @@ function formatUriAsLink(name: string | null | undefined, uri: string): string {
     if (name && name.length > 0) {
         return `[@${name}](${uri})`;
     }
-    if (uri.startsWith("file://")) {
-        const path = uri.replace("file://", "");
+    if (uri.startsWith(FILE_URI_PREFIX)) {
+        const path = uri.replace(FILE_URI_PREFIX, "");
         const fileName = path.split("/").pop() ?? path;
         return `[@${fileName}](${uri})`;
     }
     return uri;
+}
+
+function buildSkillInput(block: acp.ResourceLink): UserInput | null {
+    const skillPath = parseSkillPath(block.uri);
+    if (skillPath === null) {
+        return null;
+    }
+
+    const name = readSkillName(block, skillPath);
+    if (name === null) {
+        return null;
+    }
+
+    return {type: "skill", name, path: skillPath};
+}
+
+function parseSkillPath(uri: string): string | null {
+    if (!uri.startsWith(FILE_URI_PREFIX)) {
+        return null;
+    }
+
+    let filePath: string;
+    try {
+        filePath = fileURLToPath(uri);
+    } catch {
+        return null;
+    }
+
+    return path.basename(filePath) === SKILL_FILE_NAME ? filePath : null;
+}
+
+function readSkillName(block: acp.ResourceLink, skillPath: string): string | null {
+    const rawName = block.name === SKILL_FILE_NAME
+        ? path.basename(path.dirname(skillPath))
+        : block.name;
+    const name = rawName.trim().replace(/^\$/, "");
+    return name.length > 0 ? name : null;
 }
 
 interface GatewayConfig {
