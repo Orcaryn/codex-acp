@@ -10,22 +10,6 @@ import {AgentMode} from "../../AgentMode";
 import type {ListMcpServerStatusResponse, Model, SkillsListResponse, TurnCompletedNotification, TurnStatus, TurnStartParams} from "../../app-server/v2";
 import type {RateLimitsMap} from "../../RateLimitsMap";
 import {ModelId} from "../../ModelId";
-
-function createTurnCompletedNotification(threadId: string, status: TurnStatus): TurnCompletedNotification {
-    return {
-        threadId,
-        turn: {
-            id: "turn-id",
-            items: [],
-            status,
-            error: null,
-            startedAt: null,
-            completedAt: null,
-            durationMs: null,
-        }
-    };
-}
-
 describe('ACP server test', { timeout: 40_000 }, () => {
 
     let fixture: TestFixture;
@@ -422,7 +406,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         return onServerNotification;
     }
 
-    function createTurn(id: string, status: "inProgress" | "completed") {
+    function createTurn(id: string, status: TurnStatus) {
         return {
             id,
             items: [],
@@ -434,12 +418,12 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         };
     }
 
-    function createTurnCompletedNotification(threadId: string, turnId: string): ServerNotification {
+    function createTurnCompletedNotification(threadId: string, turnId: string, status: TurnStatus = "completed"): ServerNotification {
         return {
             method: "turn/completed",
             params: {
                 threadId,
-                turn: createTurn(turnId, "completed"),
+                turn: createTurn(turnId, status),
             },
         };
     }
@@ -769,10 +753,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             )).toBe(true);
         });
 
-        mockFixture.sendServerNotification({
-            method: "turn/completed",
-            params: createTurnCompletedNotification("session-id", "completed")
-        });
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "compact-turn-id"));
 
         await expect(promptPromise).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
         expect(mockFixture.getCodexConnectionEvents([])).toContainEqual(expect.objectContaining({
@@ -803,18 +784,12 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             )).toBe(true);
         });
 
-        mockFixture.sendServerNotification({
-            method: "turn/completed",
-            params: createTurnCompletedNotification("other-session-id", "completed")
-        });
+        mockFixture.sendServerNotification(createTurnCompletedNotification("other-session-id", "other-turn-id"));
 
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(resolved).toBe(false);
 
-        mockFixture.sendServerNotification({
-            method: "turn/completed",
-            params: createTurnCompletedNotification("session-id", "completed")
-        });
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "compact-turn-id"));
 
         await expect(promptPromise).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
         expect(resolved).toBe(true);
@@ -837,10 +812,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             )).toBe(true);
         });
 
-        mockFixture.sendServerNotification({
-            method: "turn/completed",
-            params: createTurnCompletedNotification("session-id", "interrupted")
-        });
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "compact-turn-id", "interrupted"));
 
         await expect(promptPromise).resolves.toEqual(expect.objectContaining({ stopReason: "cancelled" }));
     });

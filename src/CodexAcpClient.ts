@@ -416,9 +416,7 @@ export class CodexAcpClient {
     }
 
     async compactSession(sessionId: string): Promise<TurnCompletedNotification> {
-        const turnCompleted = this.codexClient.awaitTurnCompleted(sessionId);
-        await this.codexClient.threadCompactStart({ threadId: sessionId });
-        return await turnCompleted;
+        return await this.codexClient.runCompact({ threadId: sessionId });
     }
 
     async listSkills(params?: SkillsListParams): Promise<SkillsListResponse> {

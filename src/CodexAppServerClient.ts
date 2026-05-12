@@ -183,6 +183,21 @@ export class CodexAppServerClient {
         }
     }
 
+    async runCompact(params: ThreadCompactStartParams): Promise<TurnCompletedNotification> {
+        let resolveTurnCompleted!: (event: TurnCompletedNotification) => void;
+        const turnCompleted = new Promise<TurnCompletedNotification>((resolve) => {
+            resolveTurnCompleted = resolve;
+        });
+        const releaseCapture = this.captureTurnCompletions(params.threadId, resolveTurnCompleted);
+
+        try {
+            await this.threadCompactStart(params);
+            return await turnCompleted;
+        } finally {
+            releaseCapture();
+        }
+    }
+
     async turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
         return await this.sendRequest({ method: "turn/interrupt", params: params });
     }
