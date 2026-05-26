@@ -145,6 +145,28 @@ describeE2E("E2E tests", () => {
 
         expect(await fixture.hasMarketplace(HELLO_WORLD_MARKETPLACE_NAME)).toBe(false);
     });
+
+    it("lists a skill from additionalDirectories", async () => {
+        fixture = await createAuthenticatedFixture();
+        const additionalRoot = await prepareHelloWorldAdditionalRoot(fixture);
+        const session = await fixture.createSession({
+            additionalDirectories: [additionalRoot],
+        });
+
+        await expectHelloSkillListed(fixture, session.sessionId);
+    });
+
+    it("lists a skill from _meta.additionalRoots", async () => {
+        fixture = await createAuthenticatedFixture();
+        const additionalRoot = await prepareHelloWorldAdditionalRoot(fixture);
+        const session = await fixture.createSession({
+            _meta: {
+                additionalRoots: [additionalRoot],
+            },
+        });
+
+        await expectHelloSkillListed(fixture, session.sessionId);
+    });
 });
 
 async function prepareHelloWorldAdditionalRoot(fixture: SpawnedAgentFixture): Promise<string> {
