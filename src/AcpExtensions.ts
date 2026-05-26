@@ -1,5 +1,3 @@
-import type {PluginListMarketplaceKind} from "./app-server/v2";
-
 export type ExtMethodRequest =
     | AuthenticationStatusRequest
     | AuthenticationLogoutRequest
@@ -19,7 +17,7 @@ export type AuthenticationStatusResponse = { type: "api-key" } | { type: "chat-g
 export type AuthenticationLogoutRequest = { method: "authentication/logout", params: {} }
 export type AuthenticationLogoutResponse = {}
 
-export type MarketplaceListRequest = { method: "marketplace/list", params: { cwd?: string, marketplaceKinds: PluginListMarketplaceKind[] } }
+export type MarketplaceListRequest = { method: "marketplace/list", params: { cwd?: string } }
 export type MarketplaceListResponse = { marketplaces: Array<{ name: string }> }
 
 export type MarketplaceRemoveRequest = { method: "marketplace/remove", params: { marketplaceName: string } }

@@ -227,8 +227,7 @@ async function installGeneratedSkillPlugin(params: {
             sparsePaths: null,
         });
         const pluginList = await codexClient.pluginList({
-            cwds: cwd ? [cwd] : [],
-            marketplaceKinds: ["local", "workspace-directory"],
+            cwds: cwd ? [cwd] : []
         });
         const listedMarketplace = pluginList.marketplaces.find((entry) =>
             entry.name === marketplace.marketplaceName || entry.path === marketplace.marketplacePath

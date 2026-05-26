@@ -150,7 +150,7 @@ export class CodexAcpServer implements acp.Agent {
             case "marketplace/list": {
                 const cwd = typeof methodRequest.params.cwd === "string" ? methodRequest.params.cwd : "";
                 const marketplaces = await this.runWithProcessCheck(() =>
-                    this.codexAcpClient.listMarketplaces(cwd, methodRequest.params.marketplaceKinds)
+                    this.codexAcpClient.listMarketplaces(cwd)
                 );
                 return {
                     marketplaces: marketplaces.map((name) => ({name})),

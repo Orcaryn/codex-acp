@@ -28,7 +28,6 @@ import type {
     GetAccountResponse,
     ListMcpServerStatusResponse,
     Model,
-    PluginListMarketplaceKind,
     SkillsListParams,
     SkillsListResponse,
     Thread,
@@ -199,10 +198,9 @@ export class CodexAcpClient {
         await this.codexClient.marketplaceRemove({marketplaceName});
     }
 
-    async listMarketplaces(cwd: string, marketplaceKinds: PluginListMarketplaceKind[]): Promise<string[]> {
+    async listMarketplaces(cwd: string): Promise<string[]> {
         const pluginList = await this.codexClient.pluginList({
-            cwds: cwd ? [cwd] : [],
-            marketplaceKinds: marketplaceKinds,
+            cwds: cwd ? [cwd] : []
         });
         return pluginList.marketplaces.map((marketplace) => marketplace.name);
     }
@@ -226,7 +224,7 @@ export class CodexAcpClient {
 
     async resumeSession(request: acp.ResumeSessionRequest): Promise<SessionMetadata> {
         const additionalRootPaths = readAdditionalRootPaths(request._meta, request.additionalDirectories);
-        await this.refreshSkills(request.cwd, request._meta);
+        await this.refreshSkills(request.cwd);
         await installAdditionalRootSkillMarketplaces({
             codexClient: this.codexClient,
             cwd: request.cwd,
@@ -279,7 +277,7 @@ export class CodexAcpClient {
 
     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
         const additionalRootPaths = readAdditionalRootPaths(request._meta, request.additionalDirectories);
-        await this.refreshSkills(request.cwd, request._meta);
+        await this.refreshSkills(request.cwd);
         await installAdditionalRootSkillMarketplaces({
             codexClient: this.codexClient,
             cwd: request.cwd,
@@ -360,18 +358,13 @@ export class CodexAcpClient {
         return this.getModelProvider() ?? "openai";
     }
 
-    private async refreshSkills(cwd: string, meta?: Record<string, unknown> | null): Promise<void> {
+    private async refreshSkills(cwd: string): Promise<void> {
         if (!cwd) {
             return;
         }
-        const additionalRoots = readAdditionalRoots(meta);
         await this.codexClient.listSkills({
             cwds: [cwd],
-            forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: cwd,
-                extraUserRoots: additionalRoots
-            }]
+            forceReload: true
         });
     }
 
@@ -442,7 +435,7 @@ export class CodexAcpClient {
             readAdditionalRootPaths(request._meta)
         );
         this.additionalRootPathsBySessionId.set(request.sessionId, additionalRootPaths);
-        await this.refreshSkills(cwd, request._meta);
+        await this.refreshSkills(cwd);
         await installAdditionalRootSkillMarketplaces({
             codexClient: this.codexClient,
             cwd,
