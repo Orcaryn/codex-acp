@@ -28,8 +28,6 @@ export interface SpawnedAgentFixture {
     readonly connection: acp.ClientSideConnection;
     readonly workspaceDir: string;
     createSession(options?: CreateSessionOptions): Promise<acp.NewSessionResponse>;
-    hasMarketplace(marketplaceName: string): Promise<boolean>;
-    removeMarketplace(marketplaceName: string): Promise<void>;
     restart(): Promise<SpawnedAgentFixture>;
     writeSkill(skill: TestSkill, rootDir?: string): void;
     setPermissionResponder(responder: PermissionResponder): void;
@@ -185,24 +183,6 @@ class SpawnedAgentFixtureImpl implements SpawnedAgentFixture {
         });
     }
 
-    async hasMarketplace(marketplaceName: string): Promise<boolean> {
-        const response = await this.connection.extMethod("marketplace/list", {
-            cwd: this.workspaceDir,
-            marketplaceKinds: ["local", "workspace-directory"],
-        });
-        const marketplaces = response["marketplaces"];
-        if (!Array.isArray(marketplaces)) {
-            return false;
-        }
-        return marketplaces.some((marketplace) =>
-            isRecord(marketplace) && marketplace["name"] === marketplaceName
-        );
-    }
-
-    async removeMarketplace(marketplaceName: string): Promise<void> {
-        await this.connection.extMethod("marketplace/remove", {marketplaceName});
-    }
-
     async restart(): Promise<SpawnedAgentFixture> {
         await this.stopProcess(false);
         return await createSpawnedAgentFixture(this.initializeConnection, this.extraEnv, this.mcpServers, this.paths, this.client);
@@ -313,10 +293,6 @@ function redactLogSecrets(content: string): string {
         .replace(/("apiKey"\s*:\s*")[^"]+(")/g, "$1[REDACTED]$2")
         .replace(/("Authorization"\s*:\s*")Bearer [^"]+(")/gi, "$1Bearer [REDACTED]$2")
         .replace(/(Incorrect API key provided: )[^.,\s]+/g, "$1[REDACTED]");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function waitForProcessExit(proc: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {

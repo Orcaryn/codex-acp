@@ -1,14 +1,10 @@
 export type ExtMethodRequest =
     | AuthenticationStatusRequest
     | AuthenticationLogoutRequest
-    | MarketplaceListRequest
-    | MarketplaceRemoveRequest
 
 export function isExtMethodRequest(request: { method: string, params: Record<string, unknown> }): request is ExtMethodRequest {
     return request.method === "authentication/status"
         || request.method === "authentication/logout"
-        || request.method === "marketplace/list"
-        || request.method === "marketplace/remove";
 }
 
 export type AuthenticationStatusRequest = { method: "authentication/status", params: {} }
@@ -16,9 +12,3 @@ export type AuthenticationStatusResponse = { type: "api-key" } | { type: "chat-g
 
 export type AuthenticationLogoutRequest = { method: "authentication/logout", params: {} }
 export type AuthenticationLogoutResponse = {}
-
-export type MarketplaceListRequest = { method: "marketplace/list", params: { cwd?: string } }
-export type MarketplaceListResponse = { marketplaces: Array<{ name: string }> }
-
-export type MarketplaceRemoveRequest = { method: "marketplace/remove", params: { marketplaceName: string } }
-export type MarketplaceRemoveResponse = {}

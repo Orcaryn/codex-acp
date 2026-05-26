@@ -12,7 +12,6 @@ import {
 } from "./acp-e2e-test-utils";
 
 const HELLO_WORLD_ADDITIONAL_ROOT_NAME = "hello-world";
-const HELLO_WORLD_MARKETPLACE_NAME = "additional-roots-hello-world";
 const HELLO_WORLD_SKILL = {
     name: "hello",
     description: "Use when the user asks for a hello world skill.",
@@ -137,20 +136,6 @@ describeE2E("E2E tests", () => {
         });
     });
 
-    it("removes an additional root marketplace", async () => {
-        fixture = await createAuthenticatedFixture();
-        const additionalRoot = await prepareHelloWorldAdditionalRoot(fixture);
-        await fixture.createSession({
-            additionalDirectories: [additionalRoot],
-        });
-
-        expect(await fixture.hasMarketplace(HELLO_WORLD_MARKETPLACE_NAME)).toBe(true);
-
-        await fixture.removeMarketplace(HELLO_WORLD_MARKETPLACE_NAME);
-
-        expect(await fixture.hasMarketplace(HELLO_WORLD_MARKETPLACE_NAME)).toBe(false);
-    });
-
     it("lists a skill from additionalDirectories", async () => {
         fixture = await createAuthenticatedFixture();
         const additionalRoot = await prepareHelloWorldAdditionalRoot(fixture);
@@ -177,7 +162,6 @@ describeE2E("E2E tests", () => {
 async function prepareHelloWorldAdditionalRoot(fixture: SpawnedAgentFixture): Promise<string> {
     const additionalRoot = path.join(fixture.workspaceDir, "..", "additional-roots", HELLO_WORLD_ADDITIONAL_ROOT_NAME);
     fixture.writeSkill(HELLO_WORLD_SKILL, path.join(additionalRoot, ".agents", "skills"));
-    await fixture.removeMarketplace(HELLO_WORLD_MARKETPLACE_NAME);
     return additionalRoot;
 }
 
