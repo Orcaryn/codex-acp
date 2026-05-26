@@ -100,40 +100,9 @@ describeE2E("E2E tests", () => {
 
     it("lists a user skill from the CODEX_HOME", async () => {
         fixture = await createAuthenticatedFixture();
-        fixture.writeSkill({
-            name: "integration-skill",
-            description: "Integration skill",
-            body: "This skill exists only for integration testing.",
-        });
+        fixture.writeSkill(HELLO_WORLD_SKILL);
         const session = await fixture.createSession();
-        await fixture.expectPromptText(session.sessionId, "/skills", (text) => {
-            expect(text).toContain("Available skills:");
-            expect(text).toContain("- integration-skill: Integration skill");
-        });
-    });
-
-    // Currently, `additionalRoots` are not propagated when listing skills
-    it.skip("lists skills from additional session roots", async () => {
-        fixture = await createAuthenticatedFixture();
-        const additionalSkillsRoot = path.join(fixture.workspaceDir, "custom-skills");
-        fixture.writeSkill({
-            name: "session-root-skill",
-            description: "Session root skill",
-            body: "This skill exists only in an additional root passed at session creation.",
-        }, additionalSkillsRoot);
-
-        const session = await fixture.connection.newSession({
-            cwd: fixture.workspaceDir,
-            mcpServers: [],
-            _meta: {
-                additionalRoots: [additionalSkillsRoot],
-            },
-        });
-
-        await fixture.expectPromptText(session.sessionId, "/skills", (text) => {
-            expect(text).toContain("Available skills:");
-            expect(text).toContain("- session-root-skill: Session root skill");
-        });
+        await expectHelloSkillListed(fixture, session.sessionId);
     });
 
     it("lists a skill from additionalDirectories", async () => {
@@ -168,6 +137,6 @@ async function prepareHelloWorldAdditionalRoot(fixture: SpawnedAgentFixture): Pr
 async function expectHelloSkillListed(fixture: SpawnedAgentFixture, sessionId: string): Promise<void> {
     await fixture.expectPromptText(sessionId, "/skills", (text) => {
         expect(text).toContain("Available skills:");
-        expect(text).toContain("- hello: Use when the user asks for a hello world skill.");
+        expect(text).toContain(`- ${HELLO_WORLD_SKILL.name}: ${HELLO_WORLD_SKILL.description}`);
     });
 }
