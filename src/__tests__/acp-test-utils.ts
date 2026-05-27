@@ -3,7 +3,6 @@ import {CodexAcpClient} from '../CodexAcpClient';
 import {CodexAppServerClient, type CodexConnectionEvent} from '../CodexAppServerClient';
 import {startCodexConnection} from "../CodexJsonRpcConnection";
 import {CodexAcpServer, type SessionState} from "../CodexAcpServer";
-import type {AgentSideConnection, RequestPermissionResponse} from "@agentclientprotocol/sdk";
 import type {ServerNotification} from "../app-server";
 import type {MessageConnection} from "vscode-jsonrpc/node";
 import path from "node:path";
@@ -346,6 +345,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         agentMode: AgentMode.DEFAULT_AGENT_MODE,
         fastModeEnabled: false,
         currentModelSupportsFast: false,
+        sessionMcpServers: [],
         ...overrides,
     };
 }

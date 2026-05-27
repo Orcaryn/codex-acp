@@ -19,7 +19,7 @@ describeE2E("E2E file approval tests", () => {
     let fixture: SpawnedAgentFixture;
 
     beforeEach(async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.ReadOnly});
+        fixture = await createAuthenticatedFixture(AgentMode.ReadOnly);
     });
 
     afterEach(async () => {
@@ -43,7 +43,7 @@ describeE2E("E2E Agent mode file permission tests", () => {
     let fixture: SpawnedAgentFixture;
 
     beforeEach(async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.Agent});
+        fixture = await createAuthenticatedFixture(AgentMode.Agent);
     });
 
     afterEach(async () => {
@@ -65,7 +65,7 @@ describeE2E("E2E Agent with full access file permission tests", () => {
     let fixture: SpawnedAgentFixture;
 
     beforeEach(async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.AgentFullAccess});
+        fixture = await createAuthenticatedFixture(AgentMode.AgentFullAccess);
     });
 
     afterEach(async () => {

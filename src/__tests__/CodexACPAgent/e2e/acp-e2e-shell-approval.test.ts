@@ -24,7 +24,7 @@ describeE2E("E2E shell approval tests", () => {
     let sessionId: string;
 
     beforeEach(async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.ReadOnly});
+        fixture = await createAuthenticatedFixture(AgentMode.ReadOnly);
         sessionId = (await fixture.createSession()).sessionId;
     });
 
@@ -78,7 +78,7 @@ describeE2E("E2E Agent mode shell permission tests", () => {
     let fixture: SpawnedAgentFixture;
 
     beforeEach(async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.Agent});
+        fixture = await createAuthenticatedFixture(AgentMode.Agent);
     });
 
     afterEach(async () => {
@@ -103,7 +103,7 @@ describeE2E("E2E Agent with full access shell permission tests", () => {
     let fixture: SpawnedAgentFixture;
 
     beforeEach(async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.AgentFullAccess});
+        fixture = await createAuthenticatedFixture(AgentMode.AgentFullAccess);
     });
 
     afterEach(async () => {
@@ -135,7 +135,7 @@ describeE2E("E2E shell cancellation tests", () => {
     }
 
     it("cancels a running shell command", async () => {
-        fixture = await createAuthenticatedFixture({initialMode: AgentMode.AgentFullAccess});
+        fixture = await createAuthenticatedFixture(AgentMode.AgentFullAccess);
         const sessionId = (await fixture.createSession()).sessionId;
         const pidFilePath = path.join(fixture.workspaceDir, "cancel-command.pid");
         const command = `/bin/sh -c 'echo $$ > "${pidFilePath}"; exec sleep 100'`;

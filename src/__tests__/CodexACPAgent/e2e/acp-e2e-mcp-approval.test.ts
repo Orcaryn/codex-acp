@@ -2,10 +2,9 @@ import type * as acp from "@agentclientprotocol/sdk";
 import fs from "node:fs";
 import path from "node:path";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
-import {McpApprovalOptionId, type McpApprovalOptionId as McpApprovalOptionIdValue} from "../../../McpApprovalOptionId";
 import {ApprovalOptionId} from "../../../ApprovalOptionId";
 import {
-    createAuthenticatedFixture,
+    createAuthenticatedFixture, createPermissionResponse,
     describeE2E,
     expectEndTurn,
     type PermissionResponder,
@@ -33,18 +32,18 @@ function isMcpPermissionRequest(request: acp.RequestPermissionRequest): boolean 
     return request.toolCall.kind === "execute" && request._meta?.["is_mcp_tool_approval"] === true;
 }
 
-function createMcpPermissionResponse(optionId: McpApprovalOptionIdValue | null): acp.RequestPermissionResponse {
+function createMcpPermissionResponse(optionId: ApprovalOptionId | null): acp.RequestPermissionResponse {
     if (optionId === null) {
         return {outcome: {outcome: "cancelled"}};
     }
     return {outcome: {outcome: "selected", optionId}};
 }
 
-function createMcpPermissionResponder(...optionIds: McpApprovalOptionIdValue[]): PermissionResponder {
+function createMcpPermissionResponder(...optionIds: ApprovalOptionId[]): PermissionResponder {
     const queue = [...optionIds];
     return (request) => createMcpPermissionResponse(
         isMcpPermissionRequest(request)
-            ? queue.shift() ?? McpApprovalOptionId.Decline
+            ? queue.shift() ?? ApprovalOptionId.RejectOnce
             : null,
     );
 }
@@ -89,7 +88,7 @@ describeE2E("E2E MCP approval tests (configured in session)", () => {
     }
 
     it("executes an approved MCP tool call", async () => {
-        fixture.setPermissionResponder(createMcpPermissionResponder(McpApprovalOptionId.AllowOnce));
+        fixture.setPermissionResponder(createMcpPermissionResponder(ApprovalOptionId.AllowOnce));
         const {sessionId, invocationMarkerPath} = await createMcpSession();
 
         await expectEchoToolReply(fixture, sessionId, MCP_ECHO_MESSAGE);
@@ -98,7 +97,7 @@ describeE2E("E2E MCP approval tests (configured in session)", () => {
     });
 
     it("ends turn when MCP tool call is rejected", async () => {
-        fixture.setPermissionResponder(createMcpPermissionResponder(McpApprovalOptionId.Decline));
+        fixture.setPermissionResponder(createMcpPermissionResponder(ApprovalOptionId.RejectOnce));
         const {sessionId, invocationMarkerPath} = await createMcpSession();
 
         expectEndTurn(await fixture.connection.prompt({
@@ -113,7 +112,7 @@ describeE2E("E2E MCP approval tests (configured in session)", () => {
     });
 
     it("skips subsequent approvals in the same session when allow_session is selected", async () => {
-        fixture.setPermissionResponder(createMcpPermissionResponder(McpApprovalOptionId.AllowSession));
+        fixture.setPermissionResponder(createMcpPermissionResponder(ApprovalOptionId.AllowForSession));
         const {sessionId, invocationMarkerPath} = await createMcpSession();
 
         await expectEchoToolReply(fixture, sessionId, "session approval first");
@@ -124,7 +123,7 @@ describeE2E("E2E MCP approval tests (configured in session)", () => {
     });
 
     it("requests subsequent approvals after session restart when allow_session is selected", async () => {
-        fixture.setPermissionResponder(createMcpPermissionResponder(McpApprovalOptionId.AllowSession, McpApprovalOptionId.AllowOnce));
+        fixture.setPermissionResponder(createMcpPermissionResponder(ApprovalOptionId.AllowForSession, ApprovalOptionId.AllowOnce));
         const {sessionId, invocationMarkerPath} = await createMcpSession();
 
         await expectEchoToolReply(fixture, sessionId, MCP_ECHO_MESSAGE);
@@ -162,9 +161,10 @@ describeE2E("E2E MCP approval tests (configured in toml)", () => {
         fixture = await createAuthenticatedFixture(undefined, [createMcpServer(invocationMarkerPath)]);
     });
 
+    //TODO: recheck allow_always == persist?
     it("skips subsequent approvals in the same session when allow_always is selected", async () => {
         fixture.setPermissionResponder(
-            createMcpPermissionResponder(McpApprovalOptionId.AllowAlways),
+            createMcpPermissionResponder(ApprovalOptionId.AllowPersist),
         );
         const sessionId = (await fixture.createSession()).sessionId;
 
@@ -177,7 +177,7 @@ describeE2E("E2E MCP approval tests (configured in toml)", () => {
 
     it.skip("skips subsequent approvals after session restart when allow_always is selected", async () => {
         fixture.setPermissionResponder(
-            createMcpPermissionResponder(McpApprovalOptionId.AllowAlways),
+            createMcpPermissionResponder(ApprovalOptionId.AllowPersist),
         );
         const firstSessionId = (await fixture.createSession()).sessionId;
 
@@ -200,15 +200,14 @@ describeE2E("E2E MCP approval tests (configured in toml)", () => {
     describe("persisted approvals", () => {
         let beforeRestartFixture: SpawnedAgentFixture | null = null;
         let afterRestartFixture: SpawnedAgentFixture | null = null;
+        let sessionId: string;
 
         beforeEach(async () => {
             // The outer beforeEach already created `fixture` without a config-backed MCP server.
             // Persistence tests need the server in config.toml so Codex offers "Always allow",
             // so dispose that fixture and replace it with a config-backed one.
             await fixture.dispose();
-            beforeRestartFixture = await createAuthenticatedFixture({
-                configBackedMcpServers: [createMcpServer()],
-            });
+            beforeRestartFixture = await createAuthenticatedFixture(undefined, [createMcpServer(invocationMarkerPath)]);
             fixture = beforeRestartFixture;
             sessionId = (await fixture.createSession()).sessionId;
         });
