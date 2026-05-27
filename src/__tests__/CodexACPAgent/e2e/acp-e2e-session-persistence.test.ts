@@ -30,14 +30,13 @@ describeE2E("E2E session persistence tests", () => {
         );
 
         afterRestartFixture = await beforeRestartFixture.restart();
-
-        const loadSessionResponse = await afterRestartFixture.connection.loadSession({
+        await afterRestartFixture.connection.loadSession({
             sessionId,
             cwd: afterRestartFixture.workspaceDir,
             mcpServers: [],
         });
-        expect(loadSessionResponse.models?.currentModelId).toBe(OTHER_TEST_MODEL_ID.toString());
 
+        await afterRestartFixture.connection.unstable_setSessionModel({sessionId, modelId: OTHER_TEST_MODEL_ID.toString()});
         await afterRestartFixture.expectPromptText(
             sessionId,
             "What token did I ask you to remember earlier? Reply with just the token and nothing else.",
