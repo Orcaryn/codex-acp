@@ -97,6 +97,7 @@ export class CodexAppServerClient {
     private readonly mcpServerStartupResolvers: Array<McpServerStartupResolver> = [];
     private readonly pendingTurnCompletionResolvers = new Map<string, Map<string, (event: TurnCompletedNotification) => void>>();
     private readonly turnCompletionCaptures = new Map<string, Set<(event: TurnCompletedNotification) => void>>();
+    private readonly cancelledTurnStartFences = new Map<string, CancelledTurnStartFence[]>();
 
     constructor(connection: MessageConnection) {
         this.connection = connection;
@@ -114,7 +115,10 @@ export class CodexAppServerClient {
             if (isTurnCompletedNotification(serverNotification)) {
                 this.recordTurnCompleted(serverNotification.params);
             }
-            this.notify(serverNotification);
+            const fenced = this.handleFencedTurnNotification(serverNotification);
+            if (!fenced) {
+                this.notify(serverNotification);
+            }
             for (const callback of this.codexEventHandlers) {
                 callback({ eventType: "notification", ...serverNotification });
             }
@@ -180,9 +184,12 @@ export class CodexAppServerClient {
                 ])
                 : {type: "started" as const, response: await turnStartPromise};
             if (turnStartedResult.type === "cancelled") {
+                const fence = this.fenceCancelledTurnStart(params.threadId, onTurnStarted);
                 void turnStartPromise.then((response) => {
-                    onTurnStarted?.(response.turn.id);
-                }).catch(() => {});
+                    this.identifyCancelledTurnStart(fence, response.turn.id);
+                }).catch(() => {
+                    this.releaseCancelledTurnStartFence(fence);
+                });
                 return turnStartedResult.completion;
             }
 
@@ -214,6 +221,25 @@ export class CodexAppServerClient {
 
     async turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
         return await this.sendRequest({ method: "turn/interrupt", params: params });
+    }
+
+    pendingTurnStartFence(threadId: string): Promise<void> | null {
+        const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
+        if (!fences.some(fence => !fence.identified)) {
+            return null;
+        }
+        return this.waitForPendingTurnStartFences(threadId);
+    }
+
+    private async waitForPendingTurnStartFences(threadId: string): Promise<void> {
+        while (true) {
+            const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
+            const unidentifiedFences = fences.filter(fence => !fence.identified);
+            if (unidentifiedFences.length === 0) {
+                return;
+            }
+            await Promise.all(unidentifiedFences.map(fence => fence.identifiedPromise));
+        }
     }
 
     async threadStart(params: ThreadStartParams): Promise<ThreadStartResponse> {
@@ -346,6 +372,96 @@ export class CodexAppServerClient {
         }
         for (const notificationHandler of this.notificationHandlers.values()) {
             notificationHandler(notification);
+        }
+    }
+
+    private fenceCancelledTurnStart(
+        threadId: string,
+        onTurnStarted?: (turnId: string) => void,
+    ): CancelledTurnStartFence {
+        let resolveIdentified!: () => void;
+        const fence: CancelledTurnStartFence = {
+            threadId,
+            turnIds: new Set(),
+            startedCallbacks: new Set(),
+            identified: false,
+            identifiedPromise: new Promise((resolve) => {
+                resolveIdentified = resolve;
+            }),
+            resolveIdentified,
+            onTurnStarted,
+        };
+        const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
+        fences.push(fence);
+        this.cancelledTurnStartFences.set(threadId, fences);
+        return fence;
+    }
+
+    private identifyCancelledTurnStart(fence: CancelledTurnStartFence, turnId: string): void {
+        fence.turnIds.add(turnId);
+        if (!fence.startedCallbacks.has(turnId)) {
+            fence.startedCallbacks.add(turnId);
+            fence.onTurnStarted?.(turnId);
+        }
+        if (!fence.identified) {
+            fence.identified = true;
+            fence.resolveIdentified();
+        }
+    }
+
+    private handleFencedTurnNotification(notification: ServerNotification): boolean {
+        const threadId = extractThreadId(notification);
+        const turnId = extractTurnId(notification);
+        if (threadId === null || turnId === null) {
+            return false;
+        }
+
+        const fences = this.cancelledTurnStartFences.get(threadId);
+        if (!fences || fences.length === 0) {
+            return false;
+        }
+
+        const matchingFence = fences.find(fence => fence.turnIds.has(turnId));
+        if (matchingFence) {
+            if (isTurnCompletedNotification(notification)) {
+                this.releaseCancelledTurnId(matchingFence, turnId);
+            }
+            return true;
+        }
+
+        const unidentifiedFence = fences.find(fence => !fence.identified);
+        if (!unidentifiedFence) {
+            return false;
+        }
+
+        this.identifyCancelledTurnStart(unidentifiedFence, turnId);
+        if (isTurnCompletedNotification(notification)) {
+            this.releaseCancelledTurnId(unidentifiedFence, turnId);
+        }
+        return true;
+    }
+
+    private releaseCancelledTurnId(fence: CancelledTurnStartFence, turnId: string): void {
+        fence.turnIds.delete(turnId);
+        if (fence.turnIds.size === 0 && fence.identified) {
+            this.releaseCancelledTurnStartFence(fence);
+        }
+    }
+
+    private releaseCancelledTurnStartFence(fence: CancelledTurnStartFence): void {
+        const fences = this.cancelledTurnStartFences.get(fence.threadId);
+        if (!fences) {
+            return;
+        }
+        const remainingFences = fences.filter(candidate => candidate !== fence);
+        if (remainingFences.length === 0) {
+            this.cancelledTurnStartFences.delete(fence.threadId);
+        } else {
+            this.cancelledTurnStartFences.set(fence.threadId, remainingFences);
+        }
+        if (!fence.identified) {
+            fence.identified = true;
+            fence.resolveIdentified();
         }
     }
 
@@ -494,6 +610,16 @@ type McpServerStartupResolver = {
     resolve: (result: McpStartupResult) => void;
 };
 
+type CancelledTurnStartFence = {
+    threadId: string;
+    turnIds: Set<string>;
+    startedCallbacks: Set<string>;
+    identified: boolean;
+    identifiedPromise: Promise<void>;
+    resolveIdentified: () => void;
+    onTurnStarted: ((turnId: string) => void) | undefined;
+};
+
 function isMcpServerStatusUpdatedNotification(notification: ServerNotification): notification is {
     method: "mcpServer/startupStatus/updated";
     params: McpServerStatusUpdatedNotification;
@@ -512,6 +638,20 @@ function extractThreadId(notification: ServerNotification): string | null {
     const params = notification.params as { threadId?: unknown } | undefined;
     if (params && typeof params.threadId === "string") {
         return params.threadId;
+    }
+    return null;
+}
+
+function extractTurnId(notification: ServerNotification): string | null {
+    const params = notification.params as { turnId?: unknown; turn?: { id?: unknown } } | undefined;
+    if (!params) {
+        return null;
+    }
+    if (typeof params.turnId === "string") {
+        return params.turnId;
+    }
+    if (params.turn && typeof params.turn.id === "string") {
+        return params.turn.id;
     }
     return null;
 }

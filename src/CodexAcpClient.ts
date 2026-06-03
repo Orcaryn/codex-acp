@@ -373,6 +373,10 @@ export class CodexAcpClient {
         approvalHandler: ApprovalHandler,
         elicitationHandler: ElicitationHandler
     ) {
+        const pendingTurnStartFence = this.codexClient.pendingTurnStartFence(sessionId);
+        if (pendingTurnStartFence) {
+            await pendingTurnStartFence;
+        }
         this.codexClient.onServerNotification(sessionId, eventHandler);
         this.codexClient.onApprovalRequest(sessionId, approvalHandler);
         this.codexClient.onElicitationRequest(sessionId, elicitationHandler);
