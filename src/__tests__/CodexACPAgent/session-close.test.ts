@@ -911,6 +911,65 @@ describe("CodexACPAgent - session close", () => {
         expect(interruptSpy).toHaveBeenCalledTimes(1);
     });
 
+    it("interrupts a known unassigned turn before cancelling overlapping pending turn starts", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = await createSession(fixture);
+        const agent = fixture.getCodexAcpAgent();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+        const turnStartResolvers = new Map<string, (value: { turn: Turn }) => void>();
+
+        vi.spyOn(codexAppServerClient, "turnStart").mockImplementation((params: TurnStartParams) => {
+            const firstInput = params.input[0];
+            const text = firstInput?.type === "text" ? firstInput.text : "";
+            return new Promise((resolve) => {
+                turnStartResolvers.set(text, resolve);
+            });
+        });
+        const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted");
+        let resolveInterrupt!: (value: Awaited<ReturnType<typeof codexAppServerClient.turnInterrupt>>) => void;
+        const interruptSpy = vi.spyOn(codexAppServerClient, "turnInterrupt").mockReturnValue(
+            new Promise<Awaited<ReturnType<typeof codexAppServerClient.turnInterrupt>>>((resolve) => {
+                resolveInterrupt = resolve;
+            })
+        );
+        const unsubscribeSpy = vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+
+        const firstPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "First" }],
+        });
+        const secondPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "Second" }],
+        });
+
+        await vi.waitFor(() => {
+            expect(turnStartResolvers.has("First")).toBe(true);
+            expect(turnStartResolvers.has("Second")).toBe(true);
+        });
+        fixture.sendServerNotification(createTurnStartedNotification(sessionId, "observed-turn-id"));
+
+        const closePromise = agent.closeSession({ sessionId });
+        await vi.waitFor(() => {
+            expect(interruptSpy).toHaveBeenCalledWith({
+                threadId: sessionId,
+                turnId: "observed-turn-id",
+            });
+        });
+        expect(interruptSpy).toHaveBeenCalledTimes(1);
+        expect(unsubscribeSpy).not.toHaveBeenCalled();
+
+        resolveInterrupt({});
+
+        await expect(firstPrompt).resolves.toMatchObject({ stopReason: "cancelled" });
+        await expect(secondPrompt).resolves.toMatchObject({ stopReason: "cancelled" });
+        await expect(closePromise).resolves.toEqual({});
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+        expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
+    });
+
     it("does not assign an observed turn-start notification to an arbitrary overlapping prompt", async () => {
         const fixture = createCodexMockTestFixture();
         const sessionId = await createSession(fixture);
@@ -1032,6 +1091,65 @@ describe("CodexACPAgent - session close", () => {
         });
         expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
         expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
+    });
+
+    it("retries a failed observed-turn interrupt when a delayed turn start response reports the same id", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = await createSession(fixture);
+        const agent = fixture.getCodexAcpAgent();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+        const turnStartResolvers = new Map<string, (value: { turn: Turn }) => void>();
+
+        vi.spyOn(codexAppServerClient, "turnStart").mockImplementation((params: TurnStartParams) => {
+            const firstInput = params.input[0];
+            const text = firstInput?.type === "text" ? firstInput.text : "";
+            return new Promise((resolve) => {
+                turnStartResolvers.set(text, resolve);
+            });
+        });
+        vi.spyOn(codexAppServerClient, "awaitTurnCompleted");
+        const interruptSpy = vi.spyOn(codexAppServerClient, "turnInterrupt")
+            .mockRejectedValueOnce(new Error("turn not ready"))
+            .mockResolvedValue({});
+        const unsubscribeSpy = vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+
+        const firstPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "First" }],
+        });
+        const secondPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "Second" }],
+        });
+
+        await vi.waitFor(() => {
+            expect(turnStartResolvers.has("First")).toBe(true);
+            expect(turnStartResolvers.has("Second")).toBe(true);
+        });
+        fixture.sendServerNotification(createTurnStartedNotification(sessionId, "observed-turn-id"));
+
+        const closePromise = agent.closeSession({ sessionId });
+        await expect(firstPrompt).resolves.toMatchObject({ stopReason: "cancelled" });
+        await expect(secondPrompt).resolves.toMatchObject({ stopReason: "cancelled" });
+        await expect(closePromise).resolves.toEqual({});
+        expect(interruptSpy).toHaveBeenCalledTimes(1);
+        expect(interruptSpy).toHaveBeenCalledWith({
+            threadId: sessionId,
+            turnId: "observed-turn-id",
+        });
+        expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
+
+        turnStartResolvers.get("First")!({ turn: createTurn("observed-turn-id", "inProgress") });
+
+        await vi.waitFor(() => {
+            expect(interruptSpy).toHaveBeenCalledTimes(2);
+        });
+        expect(interruptSpy).toHaveBeenLastCalledWith({
+            threadId: sessionId,
+            turnId: "observed-turn-id",
+        });
     });
 
     it("cancels permission requests that arrive after close begins", async () => {

@@ -63,6 +63,7 @@ export interface SessionState {
     resolveCloseSignal: () => void;
     activePrompts: Set<ActivePrompt>;
     interruptedTurnIds: Set<string>;
+    resolvedFailedInterruptTurnIds: Set<string>;
     turnInterruptionAttempts: Map<string, Promise<boolean>>;
     sessionMcpServers?: Array<string>;
 }
@@ -238,6 +239,7 @@ export class CodexAcpServer implements acp.Agent {
                 ...this.createCloseSignal(),
                 activePrompts: new Set(),
                 interruptedTurnIds: new Set(),
+                resolvedFailedInterruptTurnIds: new Set(),
                 turnInterruptionAttempts: new Map(),
                 sessionMcpServers: sessionMcpServers,
             }
@@ -657,6 +659,7 @@ export class CodexAcpServer implements acp.Agent {
                 ...this.createCloseSignal(),
                 activePrompts: new Set(),
                 interruptedTurnIds: new Set(),
+                resolvedFailedInterruptTurnIds: new Set(),
                 turnInterruptionAttempts: new Map(),
                 sessionMcpServers: sessionMcpServers,
             };
@@ -1315,12 +1318,25 @@ export class CodexAcpServer implements acp.Agent {
         activePrompt: ActivePrompt,
         reason: string
     ): Promise<void> {
+        const unassignedCurrentTurnId = this.unassignedCurrentTurnId(sessionState);
         if (
             !activePrompt.turnId
             && activePrompt.turnStartRequested
             && this.unassignedTurnStartPrompts(sessionState).length === 1
         ) {
-            activePrompt.turnId = this.unassignedCurrentTurnId(sessionState);
+            activePrompt.turnId = unassignedCurrentTurnId;
+        }
+        if (
+            !activePrompt.turnId
+            && activePrompt.turnStartRequested
+            && unassignedCurrentTurnId
+        ) {
+            const interrupted = await this.interruptTurnOnce(sessionState, unassignedCurrentTurnId, reason);
+            if (!interrupted) {
+                this.resolveFailedTurnInterruption(sessionState, unassignedCurrentTurnId);
+            }
+            this.cancelActivePrompt(activePrompt);
+            return;
         }
         if (!activePrompt.turnId) {
             this.cancelActivePrompt(activePrompt);
@@ -1336,11 +1352,14 @@ export class CodexAcpServer implements acp.Agent {
     }
 
     private resolveFailedTurnInterruption(sessionState: SessionState, turnId: string): void {
+        if (sessionState.resolvedFailedInterruptTurnIds.has(turnId)) {
+            return;
+        }
+        sessionState.resolvedFailedInterruptTurnIds.add(turnId);
         this.codexAcpClient.resolveInterruptedTurn({
             threadId: sessionState.sessionId,
             turnId,
         });
-        sessionState.interruptedTurnIds.add(turnId);
     }
 
     private unassignedTurnStartPrompts(sessionState: SessionState): ActivePrompt[] {

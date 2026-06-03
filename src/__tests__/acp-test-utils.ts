@@ -350,6 +350,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         resolveCloseSignal: () => {},
         activePrompts: new Set(),
         interruptedTurnIds: new Set(),
+        resolvedFailedInterruptTurnIds: new Set(),
         turnInterruptionAttempts: new Map(),
         ...overrides,
     };
