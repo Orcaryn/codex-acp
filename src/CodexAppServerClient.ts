@@ -84,8 +84,6 @@ const McpServerElicitationRequest = new RequestType<
     void
 >('mcpServer/elicitation/request');
 
-const ABANDONED_TURN_START_FENCE_TIMEOUT_MS = 1000;
-
 /**
  * A type-safe client over the Codex App Server's JSON-RPC API.
  * Maps each request to its expected response and exposes clear, typed methods for supported JSON-RPC operations.
@@ -197,14 +195,9 @@ export class CodexAppServerClient {
             if (turnStartedResult.type === "cancelled") {
                 const fence = this.fenceCancelledTurnStart(params.threadId, onTurnStarted);
                 void turnStartPromise.then((response) => {
-                    if (
-                        !this.identifyCancelledTurnStart(fence, response.turn.id)
-                        && fence.releaseReason === "abandoned"
-                    ) {
-                        this.fenceKnownCancelledTurn(params.threadId, response.turn.id);
-                    }
+                    this.identifyCancelledTurnStart(fence, response.turn.id);
                 }).catch(() => {
-                    this.releaseCancelledTurnStartFence(fence, "abandoned");
+                    this.releaseCancelledTurnStartFence(fence);
                 });
                 return turnStartedResult.completion;
             }
@@ -257,16 +250,6 @@ export class CodexAppServerClient {
         const unidentifiedFence = fences.find(fence => !fence.identified);
         if (unidentifiedFence) {
             this.identifyCancelledTurnStart(unidentifiedFence, turnId, false);
-            return;
-        }
-
-        const fence = this.fenceCancelledTurnStart(threadId);
-        this.identifyCancelledTurnStart(fence, turnId, false);
-    }
-
-    private fenceKnownCancelledTurn(threadId: string, turnId: string): void {
-        const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
-        if (fences.some(fence => fence.turnIds.has(turnId))) {
             return;
         }
 
@@ -433,14 +416,7 @@ export class CodexAppServerClient {
             }),
             resolveIdentified,
             onTurnStarted,
-            abandonedTimer: null,
-            releaseReason: null,
         };
-        fence.abandonedTimer = setTimeout(() => {
-            if (!fence.identified) {
-                this.releaseCancelledTurnStartFence(fence, "abandoned");
-            }
-        }, ABANDONED_TURN_START_FENCE_TIMEOUT_MS);
         const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
         fences.push(fence);
         this.cancelledTurnStartFences.set(threadId, fences);
@@ -538,7 +514,7 @@ export class CodexAppServerClient {
     private releaseCancelledTurnId(fence: CancelledTurnStartFence, turnId: string): void {
         fence.turnIds.delete(turnId);
         if (fence.turnIds.size === 0 && fence.identified) {
-            this.releaseCancelledTurnStartFence(fence, "completed");
+            this.releaseCancelledTurnStartFence(fence);
         }
     }
 
@@ -547,12 +523,7 @@ export class CodexAppServerClient {
         return fences.includes(fence);
     }
 
-    private releaseCancelledTurnStartFence(
-        fence: CancelledTurnStartFence,
-        releaseReason: CancelledTurnStartFenceReleaseReason,
-    ): void {
-        this.clearCancelledTurnStartFenceTimer(fence);
-        fence.releaseReason = releaseReason;
+    private releaseCancelledTurnStartFence(fence: CancelledTurnStartFence): void {
         const fences = this.cancelledTurnStartFences.get(fence.threadId);
         if (!fences) {
             return;
@@ -567,14 +538,6 @@ export class CodexAppServerClient {
             fence.identified = true;
             fence.resolveIdentified();
         }
-    }
-
-    private clearCancelledTurnStartFenceTimer(fence: CancelledTurnStartFence): void {
-        if (fence.abandonedTimer === null) {
-            return;
-        }
-        clearTimeout(fence.abandonedTimer);
-        fence.abandonedTimer = null;
     }
 
     private recordTurnCompleted(event: TurnCompletedNotification): void {
@@ -730,11 +693,7 @@ type CancelledTurnStartFence = {
     identifiedPromise: Promise<void>;
     resolveIdentified: () => void;
     onTurnStarted: ((turnId: string) => void) | undefined;
-    abandonedTimer: ReturnType<typeof setTimeout> | null;
-    releaseReason: CancelledTurnStartFenceReleaseReason | null;
 };
-
-type CancelledTurnStartFenceReleaseReason = "abandoned" | "completed";
 
 function isMcpServerStatusUpdatedNotification(notification: ServerNotification): notification is {
     method: "mcpServer/startupStatus/updated";

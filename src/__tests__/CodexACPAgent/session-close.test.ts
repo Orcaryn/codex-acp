@@ -479,6 +479,56 @@ describe("CodexACPAgent - session close", () => {
         expect(() => agent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
     });
 
+    it("unsubscribes a pending load closed after resume but failed before session install", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = "session-id";
+        const agent = fixture.getCodexAcpAgent();
+        const codexAcpClient = fixture.getCodexAcpClient();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+
+        vi.spyOn(agent, "checkAuthorization").mockResolvedValue(undefined);
+        vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({
+            account: null,
+            requiresOpenaiAuth: false,
+        });
+        const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue(
+            createThreadResumeResponse(sessionId)
+        );
+        let rejectModels!: (reason?: unknown) => void;
+        const modelsPromise = new Promise<Awaited<ReturnType<typeof codexAppServerClient.listModels>>>((_, reject) => {
+            rejectModels = reject;
+        });
+        const listModelsSpy = vi.spyOn(codexAppServerClient, "listModels").mockReturnValue(modelsPromise);
+        const listSkillsSpy = vi.spyOn(codexAcpClient, "listSkills").mockResolvedValue({ data: [] });
+        const unsubscribeSpy = vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+
+        const loadPromise = agent.loadSession({
+            sessionId,
+            cwd: "/workspace",
+            mcpServers: [],
+        });
+
+        await vi.waitFor(() => {
+            expect(threadResumeSpy).toHaveBeenCalledTimes(1);
+            expect(listModelsSpy).toHaveBeenCalledTimes(1);
+        });
+
+        const closePromise = agent.closeSession({ sessionId });
+        await flushAsyncWork();
+        expect(unsubscribeSpy).not.toHaveBeenCalled();
+
+        rejectModels(new Error("model list failed"));
+
+        await expect(loadPromise).rejects.toThrow("model list failed");
+        await expect(closePromise).resolves.toEqual({});
+        expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
+        expect(listSkillsSpy).not.toHaveBeenCalled();
+        expect(fixture.getAcpConnectionEvents([])).toEqual([]);
+        expect(() => agent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
+    });
+
     it("rejects a load that is closed while authorization is pending", async () => {
         const fixture = createCodexMockTestFixture();
         const sessionId = "session-id";
@@ -1117,7 +1167,7 @@ describe("CodexACPAgent - session close", () => {
         expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("releases an abandoned unidentified turn-start fence so future prompts do not hang", async () => {
+    it("keeps an unresolved turn-start fence protective after the abandoned wait", async () => {
         const fixture = createCodexMockTestFixture();
         const sessionId = await createSession(fixture);
         const agent = fixture.getCodexAcpAgent();
@@ -1171,9 +1221,23 @@ describe("CodexACPAgent - session close", () => {
             expect(turnStartResolvers.has("New")).toBe(false);
 
             await vi.advanceTimersByTimeAsync(1000);
+            await Promise.resolve();
+            expect(turnStartResolvers.has("New")).toBe(false);
+
+            fixture.clearAcpConnectionDump();
+            fixture.sendServerNotification({
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: sessionId,
+                    turnId: "old-turn-id",
+                    itemId: "old-item-id",
+                    delta: "stale after abandoned wait",
+                },
+            } satisfies ServerNotification);
             await vi.waitFor(() => {
                 expect(turnStartResolvers.has("New")).toBe(true);
             });
+            expect(fixture.getAcpConnectionEvents([])).toEqual([]);
             vi.useRealTimers();
 
             turnStartResolvers.get("Old")!({ turn: createTurn("old-turn-id", "inProgress") });

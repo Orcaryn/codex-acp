@@ -87,6 +87,7 @@ interface PendingMcpStartupSession {
 interface PendingSessionOpen {
     count: number;
     closeRequested: boolean;
+    subscribedSessionIds: Set<string>;
     completion: Promise<void>;
     resolveCompletion: () => void;
 }
@@ -212,7 +213,10 @@ export class CodexAcpServer implements acp.Agent {
             let sessionMetadata: SessionMetadata;
             if ("sessionId" in request) {
                 logger.log(`Resume existing session: ${request.sessionId}...`)
-                sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.resumeSession(request));
+                sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.resumeSession(
+                    request,
+                    () => this.markOpeningSessionSubscribed(request.sessionId)
+                ));
             } else {
                 logger.log(`Create new session...`)
                 sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.newSession(request));
@@ -339,6 +343,7 @@ export class CodexAcpServer implements acp.Agent {
             if (openedSessionState) {
                 return await this.closeSession(params);
             }
+            await this.unsubscribePendingOpenSubscriptions(pendingOpen);
             logger.log("Close session completed for pending open", {sessionId: params.sessionId});
             return {};
         }
@@ -387,6 +392,7 @@ export class CodexAcpServer implements acp.Agent {
             this.pendingSessionOpens.set(sessionId, {
                 count: 1,
                 closeRequested: false,
+                subscribedSessionIds: new Set(),
                 completion,
                 resolveCompletion,
             });
@@ -419,6 +425,14 @@ export class CodexAcpServer implements acp.Agent {
         return this.pendingSessionOpens.get(sessionId)?.closeRequested ?? false;
     }
 
+    private markOpeningSessionSubscribed(sessionId: string): void {
+        this.pendingSessionOpens.get(sessionId)?.subscribedSessionIds.add(sessionId);
+    }
+
+    private clearOpeningSessionSubscription(sessionId: string): void {
+        this.pendingSessionOpens.get(sessionId)?.subscribedSessionIds.delete(sessionId);
+    }
+
     private shouldRejectOpeningSession(sessionId: string): boolean {
         const sessionState = this.sessions.get(sessionId);
         return (
@@ -441,10 +455,18 @@ export class CodexAcpServer implements acp.Agent {
         if (this.shouldRejectOpeningSession(sessionId)) {
             if (unsubscribeRejectedSession) {
                 await this.unsubscribeRejectedSession(sessionId);
+                this.clearOpeningSessionSubscription(sessionId);
             }
             throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
         }
+        this.clearOpeningSessionSubscription(sessionId);
         this.sessions.set(sessionId, sessionState);
+    }
+
+    private async unsubscribePendingOpenSubscriptions(pendingOpen: PendingSessionOpen): Promise<void> {
+        const subscribedSessionIds = Array.from(pendingOpen.subscribedSessionIds);
+        pendingOpen.subscribedSessionIds.clear();
+        await Promise.all(subscribedSessionIds.map((sessionId) => this.unsubscribeRejectedSession(sessionId)));
     }
 
     private async unsubscribeRejectedSession(sessionId: string): Promise<void> {
@@ -650,7 +672,10 @@ export class CodexAcpServer implements acp.Agent {
 
             logger.log(`Load existing session: ${request.sessionId}...`);
             const sessionMetadata: SessionMetadataWithThread = await this.runWithProcessCheck(() =>
-                this.codexAcpClient.loadSession(request)
+                this.codexAcpClient.loadSession(
+                    request,
+                    () => this.markOpeningSessionSubscribed(request.sessionId)
+                )
             );
 
             const account = await this.getActiveAccount();
