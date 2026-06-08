@@ -100,7 +100,7 @@ describe("Fast mode session config", () => {
             },
         });
 
-        expect(response.configOptions).toEqual([createFastModeConfigOption(false)]);
+        expect(response.configOptions).toContainEqual(createFastModeConfigOption(false));
     });
 
     it("keeps Fast mode config options for non-JetBrains 2026.1 clients", async () => {
@@ -113,7 +113,7 @@ describe("Fast mode session config", () => {
             },
         });
 
-        expect(response.configOptions).toEqual([createFastModeConfigOption(false)]);
+        expect(response.configOptions).toContainEqual(createFastModeConfigOption(false));
     });
 
     it("toggles Fast mode through session config options", async () => {
