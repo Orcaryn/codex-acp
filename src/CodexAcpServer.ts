@@ -414,7 +414,7 @@ export class CodexAcpServer {
             this.publishMcpStartupStatusAsync(sessionId);
         }
 
-        this.publishAvailableCommandsAsync(sessionId);
+        this.publishAvailableCommandsAsync(sessionState);
         const sessionModelState: LegacySessionModelState = this.createModelState(models, currentModelId);
         const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
 
@@ -804,8 +804,8 @@ export class CodexAcpServer {
         return !isJetBrains2026_1Client(this.clientInfo);
     }
 
-    private publishAvailableCommandsAsync(sessionId: string) {
-        void this.availableCommands.publish(sessionId);
+    private publishAvailableCommandsAsync(sessionState: SessionState) {
+        void this.availableCommands.publish(sessionState);
     }
 
     private findCurrentModel(models: Model[], currentModelId: string): Model | undefined {
@@ -917,7 +917,7 @@ export class CodexAcpServer {
             this.publishMcpStartupStatusAsync(sessionId);
         }
 
-        await this.availableCommands.publish(sessionId);
+        await this.availableCommands.publish(sessionState);
         const sessionModelState: LegacySessionModelState = this.createModelState(models, currentModelId);
         const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
 
