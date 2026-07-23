@@ -93,6 +93,43 @@ describe("ResponseItemHistoryFallback", () => {
         ]);
     });
 
+    it("restores web search results as resource links", () => {
+        const updates = parseResponseItemHistoryFallback(jsonl([
+            {
+                type: "event_msg",
+                payload: {
+                    type: "web_search_end",
+                    call_id: "web-search-1",
+                    query: "agent client protocol",
+                    action: { type: "search", query: "agent client protocol" },
+                    results: [
+                        {
+                            type: "text_result",
+                            domain: "agentclientprotocol.com",
+                            title: "Agent Client Protocol",
+                            url: "https://agentclientprotocol.com/overview/introduction",
+                            snippet: "An open protocol for communication between code editors and AI agents.",
+                        },
+                    ],
+                },
+            },
+        ]), "terminal_output", new Set(["web-search-1"]));
+
+        expect(toolCallUpdateContents(updates)).toEqual([{
+            toolCallId: "web-search-1",
+            content: [{
+                type: "content",
+                content: {
+                    type: "resource_link",
+                    uri: "https://agentclientprotocol.com/overview/introduction",
+                    name: "Agent Client Protocol",
+                    title: "Agent Client Protocol",
+                    description: "An open protocol for communication between code editors and AI agents.",
+                },
+            }],
+        }]);
+    });
+
     it("marks exec command outputs without exit footers failed when they report command errors", () => {
         const updates = parseResponseItemHistoryFallback(jsonl([
             functionCall("call-read-failed", "cat missing.txt"),
@@ -161,6 +198,15 @@ function toolCallUpdateStatuses(updates: UpdateSessionEvent[] | null): Array<Pic
         .map((update) => ({
             toolCallId: update.toolCallId,
             status: update.status ?? null,
+        }));
+}
+
+function toolCallUpdateContents(updates: UpdateSessionEvent[] | null): Array<{ toolCallId: string; content: ToolCallUpdate["content"] }> {
+    return (updates ?? [])
+        .filter((update): update is ToolCallUpdate => update.sessionUpdate === "tool_call_update")
+        .map((update) => ({
+            toolCallId: update.toolCallId,
+            content: update.content,
         }));
 }
 

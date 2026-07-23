@@ -10,10 +10,10 @@ import { createAgentMessageChunk, createCodexMessagePhaseMeta, createUserMessage
 
 type JsonRecord = Record<string, unknown>;
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
+type AcpToolCallUpdateEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call_update" }>;
+type AcpToolCallContent = NonNullable<AcpToolCallUpdateEvent["content"]>[number];
 type AcpToolKind = NonNullable<AcpToolCallEvent["kind"]>;
-type AcpToolCallUpdateStatus = NonNullable<Extract<UpdateSessionEvent, {
-    sessionUpdate: "tool_call_update"
-}>["status"]>;
+type AcpToolCallUpdateStatus = NonNullable<AcpToolCallUpdateEvent["status"]>;
 type LegacyFunctionCallUpdate = {
     update: AcpToolCallEvent;
     usesTerminal: boolean;
@@ -67,6 +67,7 @@ export function parseResponseItemHistoryFallback(
     const skippedToolCallIds = new Set<string>();
     const emittedToolCallIds = new Set<string>();
     let recoveredFunctionCall = false;
+    let recoveredWebSearchResults = false;
     let lastUpdateKey: string | null = null;
 
     const pushUpdates = (nextUpdates: UpdateSessionEvent[]) => {
@@ -88,6 +89,7 @@ export function parseResponseItemHistoryFallback(
 
         const eventMsgUpdates = createEventMsgUpdates(record);
         if (eventMsgUpdates) {
+            recoveredWebSearchResults ||= eventMsgUpdates.some((update) => update.sessionUpdate === "tool_call_update");
             pushUpdates(eventMsgUpdates);
             continue;
         }
@@ -149,7 +151,7 @@ export function parseResponseItemHistoryFallback(
         }
     }
 
-    return recoveredFunctionCall ? updates : null;
+    return recoveredFunctionCall || recoveredWebSearchResults ? updates : null;
 }
 
 function toolCallIdsFromThread(thread: Thread): Set<string> {
@@ -256,9 +258,52 @@ function createEventMsgUpdates(record: JsonRecord): UpdateSessionEvent[] | null 
             return createUserMessageEventUpdates(payload);
         case "agent_reasoning":
             return createAgentReasoningEventUpdates(payload);
+        case "web_search_end":
+            return createWebSearchEndEventUpdates(payload);
         default:
             return [];
     }
+}
+
+function createWebSearchEndEventUpdates(payload: JsonRecord): UpdateSessionEvent[] {
+    const toolCallId = stringValue(payload["call_id"]);
+    const results = payload["results"];
+    if (!toolCallId || !Array.isArray(results)) {
+        return [];
+    }
+
+    const content = results.flatMap(createWebSearchResultContent);
+    if (content.length === 0) {
+        return [];
+    }
+
+    return [{
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "completed",
+        content,
+    }];
+}
+
+function createWebSearchResultContent(value: unknown): AcpToolCallContent[] {
+    const result = asRecord(value);
+    const uri = result ? stringValue(result["url"]) : null;
+    if (!result || !uri) {
+        return [];
+    }
+
+    const title = stringValue(result["title"]);
+    const domain = stringValue(result["domain"]);
+    const description = stringValue(result["snippet"]);
+    const content: ContentBlock = {
+        type: "resource_link",
+        uri,
+        name: title ?? domain ?? uri,
+        ...(title ? { title } : {}),
+        ...(description ? { description } : {}),
+    };
+
+    return [{ type: "content", content }];
 }
 
 function createUserMessageEventUpdates(payload: JsonRecord): UpdateSessionEvent[] {
