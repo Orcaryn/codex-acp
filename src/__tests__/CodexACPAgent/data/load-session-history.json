@@ -195,6 +195,38 @@
         "sessionUpdate": "user_message_chunk",
         "messageId": "item-user-1",
         "content": {
+          "type": "text",
+          "text": "[@audio](https://example.com/audio.mp3)"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
+        "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
+        "content": {
+          "type": "text",
+          "text": "[@audio.mp3](file:///tmp/codex-acp-load-session-audio.mp3)"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
+        "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
+        "content": {
           "type": "resource_link",
           "name": "notes.txt",
           "uri": "file:///test/project/notes.txt"

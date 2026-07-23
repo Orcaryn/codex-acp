@@ -1558,6 +1558,12 @@ export class CodexAcpServer {
                 }
                 return [{ type: "text", text: this.formatUriAsLink(null, uri) }];
             }
+            case "audio":
+                return [{ type: "text", text: this.formatUriAsLink("audio", input.url) }];
+            case "localAudio": {
+                const uri = input.path.startsWith("file://") ? input.path : pathToFileURL(input.path).href;
+                return [{ type: "text", text: this.formatUriAsLink(null, uri) }];
+            }
             case "skill":
                 return [{ type: "text", text: `skill:${input.name} (${input.path})` }];
             case "mention": {

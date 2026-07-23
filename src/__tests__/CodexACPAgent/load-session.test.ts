@@ -11,7 +11,9 @@ describe("CodexACPAgent - loadSession", () => {
     it("should replay history during loadSession", async () => {
         const localImageDirectory = await mkdtemp(join(tmpdir(), "codex-acp-load-session-"));
         const localImagePath = join(localImageDirectory, "image.png");
+        const localAudioPath = join(localImageDirectory, "audio.mp3");
         await writeFile(localImagePath, "test image");
+        await writeFile(localAudioPath, "test audio");
 
         const fixture = createCodexMockTestFixture();
         const codexAcpAgent = fixture.getCodexAcpAgent();
@@ -95,6 +97,8 @@ describe("CodexACPAgent - loadSession", () => {
                                 { type: "image", url: "https://example.com/image.png" },
                                 { type: "image", url: "data:image/png;base64,dGVzdCBpbWFnZQ==" },
                                 { type: "localImage", path: localImagePath },
+                                { type: "audio", url: "https://example.com/audio.mp3" },
+                                { type: "localAudio", path: localAudioPath },
                                 { type: "mention", name: "notes.txt", path: "/test/project/notes.txt" },
                             ],
                         },
@@ -238,6 +242,9 @@ describe("CodexACPAgent - loadSession", () => {
         const replay = fixture.getAcpConnectionDump([]).replaceAll(
             pathToFileURL(localImagePath).href,
             "file:///tmp/codex-acp-load-session-image.png",
+        ).replaceAll(
+            pathToFileURL(localAudioPath).href,
+            "file:///tmp/codex-acp-load-session-audio.mp3",
         );
         await expect(`${replay}\n`).toMatchFileSnapshot(
             "data/load-session-history.json"
