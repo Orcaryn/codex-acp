@@ -8,6 +8,7 @@ import type {
 import type {
     ConfigReadParams,
     ConfigReadResponse,
+    GetAccountRateLimitsResponse,
     GetAccountParams,
     GetAccountResponse,
     ListMcpServerStatusParams,
@@ -614,6 +615,10 @@ export class CodexAppServerClient {
 
     async accountRead(params: GetAccountParams): Promise<GetAccountResponse> {
         return await this.sendRequest({ method: "account/read", params: params });
+    }
+
+    async accountRateLimitsRead(): Promise<GetAccountRateLimitsResponse> {
+        return await this.sendRequest({ method: "account/rateLimits/read", params: undefined });
     }
 
     //TODO create type-safe helper

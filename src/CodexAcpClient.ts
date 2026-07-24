@@ -25,6 +25,7 @@ import {sanitizeMcpServerName} from "./McpServerName";
 import type {
     AccountLoginCompletedNotification,
     AccountUpdatedNotification,
+    GetAccountRateLimitsResponse,
     GetAccountResponse,
     ListMcpServerStatusResponse,
     Model,
@@ -200,6 +201,10 @@ export class CodexAcpClient {
                     name: "amazonBedrock",
                 };
         }
+    }
+
+    async getAccountRateLimits(): Promise<GetAccountRateLimitsResponse> {
+        return await this.codexClient.accountRateLimitsRead();
     }
 
     async getCurrentModelProvider(): Promise<string | null> {

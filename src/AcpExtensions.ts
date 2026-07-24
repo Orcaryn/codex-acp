@@ -10,6 +10,7 @@ import type {
 export const LEGACY_SET_SESSION_MODEL_METHOD = "session/set_model";
 export const SESSION_STEERING_METHOD = "_session/steering";
 export const GOAL_CONTROL_METHOD = "_codex/session/goal_control";
+export const ACCOUNT_RATE_LIMITS_METHOD = "_codex/account/rate_limits";
 
 export type LegacySessionModel = {
     modelId: string;
@@ -47,13 +48,15 @@ export type ExtMethodRequest =
     | LegacySetSessionModelExtRequest
     | SessionSteeringExtRequest
     | GoalControlExtRequest
+    | { method: typeof ACCOUNT_RATE_LIMITS_METHOD, params: {} }
 
 export function isExtMethodRequest(request: { method: string, params: Record<string, unknown> }): request is ExtMethodRequest {
     return request.method === "authentication/status"
         || request.method === "authentication/logout"
         || request.method === LEGACY_SET_SESSION_MODEL_METHOD
         || request.method === GOAL_CONTROL_METHOD
-        || request.method === SESSION_STEERING_METHOD;
+        || request.method === SESSION_STEERING_METHOD
+        || request.method === ACCOUNT_RATE_LIMITS_METHOD;
 }
 
 export type AuthenticationStatusRequest = { method: "authentication/status", params: {} }

@@ -56,6 +56,7 @@ import {
     isExtMethodRequest,
     LEGACY_SET_SESSION_MODEL_METHOD,
     SESSION_STEERING_METHOD,
+    ACCOUNT_RATE_LIMITS_METHOD,
 } from "./AcpExtensions";
 import {
     createCollabAgentToolCallUpdate,
@@ -268,6 +269,8 @@ export class CodexAcpServer {
                 await this.logout({});
                 return {};
             }
+            case ACCOUNT_RATE_LIMITS_METHOD:
+                return await this.runWithProcessCheck(() => this.codexAcpClient.getAccountRateLimits());
             case LEGACY_SET_SESSION_MODEL_METHOD:
                 return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(methodRequest.params));
             case SESSION_STEERING_METHOD:
