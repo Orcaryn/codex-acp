@@ -3,7 +3,7 @@ import type {
     FuzzyFileSearchSessionUpdatedNotification,
     ServerNotification
 } from "./app-server";
-import type {SessionState, ThreadGoalSnapshot} from "./CodexAcpServer";
+import type {SessionState} from "./CodexAcpServer";
 import {type PlanEntry, RequestError} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
 import type {
@@ -19,6 +19,7 @@ import type {
     ItemStartedNotification,
     ThreadItem,
     ModelReroutedNotification,
+    PlanDeltaNotification,
     ReasoningSummaryPartAddedNotification,
     ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification,
@@ -51,6 +52,7 @@ import {
     createFuzzyFileSearchComplete,
     createFuzzyFileSearchStartOrUpdate,
     createMcpToolCallUpdate,
+    createSubAgentActivityUpdate,
     createWebSearchCompleteUpdate,
     createWebSearchStartUpdate,
     fuzzyFileSearchToolCallId,
@@ -62,6 +64,7 @@ import {
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
 } from "./ContentChunks";
+import {sameThreadGoalSnapshot, toThreadGoalSnapshot} from "./ThreadGoalSnapshot";
 
 export { stripShellPrefix };
 
@@ -74,10 +77,12 @@ export class CodexEventHandler {
     private readonly activeGuardianApprovalReviews = new Set<string>();
     private readonly activeImageGenerationItems = new Set<string>();
     private readonly emittedImageViewItems = new Set<string>();
+    private readonly planDeltaTextByItemId = new Map<string, string>();
     private readonly seenReasoningDeltaItemIds = new Set<string>();
     private readonly terminalCommandIds = new Set<string>();
     private readonly terminalCommandOutputIds = new Set<string>();
     private readonly agentMessagePhases = new Map<string, string | null>();
+    private readonly activeSubAgentActivities = new Set<string>();
 
     constructor(connection: AcpClientConnection, sessionState: SessionState) {
         this.connection = connection;
@@ -107,6 +112,8 @@ export class CodexEventHandler {
         switch (notification.method) {
             case "item/agentMessage/delta":
                 return await this.createTextEvent(notification.params);
+            case "item/plan/delta":
+                return this.createPlanDeltaEvent(notification.params);
             case "item/started":
                 return await this.createItemEvent(notification.params);
             case "item/completed":
@@ -187,6 +194,8 @@ export class CodexEventHandler {
                 return this.createTerminalInteractionEvent(notification.params);
             // ignored events
             case "thread/deleted":
+            case "thread/environment/connected":
+            case "thread/environment/disconnected":
             case "command/exec/outputDelta":
             case "hook/started":
             case "hook/completed":
@@ -216,8 +225,8 @@ export class CodexEventHandler {
             case "mcpServer/oauthLogin/completed":
             case "externalAgentConfig/import/completed":
             case "rawResponseItem/completed":
+            case "rawResponse/completed":
             case "thread/started":
-            case "item/plan/delta":
             case "remoteControl/status/changed":
             case "app/list/updated":
             case "thread/settings/updated":
@@ -256,8 +265,9 @@ export class CodexEventHandler {
     }
 
     private createThreadGoalUpdatedEvent(event: ThreadGoalUpdatedNotification): UpdateSessionEvent | null {
-        const goalSnapshot = this.createThreadGoalSnapshot(event);
-        if (this.sameThreadGoalSnapshot(this.sessionState.currentGoal, goalSnapshot)) {
+        this.sessionState.goalRevision += 1;
+        const goalSnapshot = toThreadGoalSnapshot(event.goal);
+        if (sameThreadGoalSnapshot(this.sessionState.currentGoal, goalSnapshot)) {
             return null;
         }
         this.sessionState.currentGoal = goalSnapshot;
@@ -268,6 +278,7 @@ export class CodexEventHandler {
     }
 
     private createThreadGoalClearedEvent(_event: ThreadGoalClearedNotification): UpdateSessionEvent | null {
+        this.sessionState.goalRevision += 1;
         if (this.sessionState.currentGoal === null) {
             return null;
         }
@@ -278,30 +289,20 @@ export class CodexEventHandler {
         });
     }
 
-    private createThreadGoalSnapshot(event: ThreadGoalUpdatedNotification): ThreadGoalSnapshot {
-        return {
-            objective: event.goal.objective.trim(),
-            status: event.goal.status,
-            tokenBudget: event.goal.tokenBudget,
-        };
-    }
-
-    private sameThreadGoalSnapshot(
-        left: ThreadGoalSnapshot | null | undefined,
-        right: ThreadGoalSnapshot
-    ): boolean {
-        return left !== null
-            && left !== undefined
-            && left.objective === right.objective
-            && left.status === right.status
-            && left.tokenBudget === right.tokenBudget;
-    }
-
     private createReasoningDeltaEvent(
         event: ReasoningSummaryTextDeltaNotification | ReasoningTextDeltaNotification
     ): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
         return this.createAgentThoughtEvent(event.delta, event.itemId);
+    }
+
+    private createPlanDeltaEvent(event: PlanDeltaNotification): UpdateSessionEvent | null {
+        if (event.delta.length === 0) {
+            return null;
+        }
+        const text = this.planDeltaTextByItemId.get(event.itemId) ?? "";
+        this.planDeltaTextByItemId.set(event.itemId, text + event.delta);
+        return null;
     }
 
     private createReasoningSectionBreakEvent(event: ReasoningSummaryPartAddedNotification): UpdateSessionEvent {
@@ -346,6 +347,8 @@ export class CodexEventHandler {
             case "contextCompaction":
                 return createContextCompactionStartUpdate(event.item);
             case "subAgentActivity":
+                this.activeSubAgentActivities.add(event.item.id);
+                return createSubAgentActivityUpdate(event.item, "in_progress", "tool_call");
             case "sleep":
             case "userMessage":
             case "hookPrompt":
@@ -398,17 +401,26 @@ export class CodexEventHandler {
             case "agentMessage":
                 this.rememberAgentMessagePhase(event.item);
                 return null;
+            case "plan": {
+                const deltaText = this.planDeltaTextByItemId.get(event.item.id) ?? "";
+                this.planDeltaTextByItemId.delete(event.item.id);
+                return this.createCompletedPlanEvent(event.item, deltaText);
+            }
             case "exitedReviewMode":
                 return this.createExitedReviewModeEvent(event.item);
             case "contextCompaction":
                 return createContextCompactionCompleteUpdate(event.item);
             //ignored types
-            case "subAgentActivity":
+            case "subAgentActivity": {
+                const sessionUpdate = this.activeSubAgentActivities.delete(event.item.id)
+                    ? "tool_call_update"
+                    : "tool_call";
+                return createSubAgentActivityUpdate(event.item, "completed", sessionUpdate);
+            }
             case "sleep":
             case "userMessage":
             case "hookPrompt":
             case "enteredReviewMode":
-            case "plan":
                 return null;
 
         }
@@ -425,6 +437,25 @@ export class CodexEventHandler {
             return null;
         }
         return this.createAgentThoughtEvent(text, item.id);
+    }
+
+    private createCompletedPlanEvent(
+        item: ThreadItem & { type: "plan" },
+        deltaText: string,
+    ): UpdateSessionEvent | null {
+        const text = item.text.length > 0 ? item.text : deltaText;
+        if (text.length === 0) {
+            return null;
+        }
+        return this.createPlanTextEvent(text, item.id);
+    }
+
+    private createPlanTextEvent(text: string, messageId: string): UpdateSessionEvent {
+        return createAgentTextMessageChunk(
+            text,
+            messageId,
+            createCodexMessagePhaseMeta("final_answer"),
+        );
     }
 
     private createExitedReviewModeEvent(item: ThreadItem & { type: "exitedReviewMode" }): UpdateSessionEvent | null {

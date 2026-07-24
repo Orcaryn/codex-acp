@@ -1,5 +1,6 @@
 import type {
     ClientContext,
+    ContentBlock,
     LoadSessionResponse,
     NewSessionResponse,
     ResumeSessionResponse,
@@ -7,6 +8,9 @@ import type {
 } from "@agentclientprotocol/sdk";
 
 export const LEGACY_SET_SESSION_MODEL_METHOD = "session/set_model";
+export const SESSION_STEERING_METHOD = "_session/steering";
+export const GOAL_CONTROL_METHOD = "_codex/session/goal_control";
+export const ACCOUNT_RATE_LIMITS_METHOD = "_codex/account/rate_limits";
 
 export type LegacySessionModel = {
     modelId: string;
@@ -42,11 +46,17 @@ export type ExtMethodRequest =
     AuthenticationStatusRequest
     | AuthenticationLogoutRequest
     | LegacySetSessionModelExtRequest
+    | SessionSteeringExtRequest
+    | GoalControlExtRequest
+    | { method: typeof ACCOUNT_RATE_LIMITS_METHOD, params: {} }
 
 export function isExtMethodRequest(request: { method: string, params: Record<string, unknown> }): request is ExtMethodRequest {
     return request.method === "authentication/status"
         || request.method === "authentication/logout"
-        || request.method === LEGACY_SET_SESSION_MODEL_METHOD;
+        || request.method === LEGACY_SET_SESSION_MODEL_METHOD
+        || request.method === GOAL_CONTROL_METHOD
+        || request.method === SESSION_STEERING_METHOD
+        || request.method === ACCOUNT_RATE_LIMITS_METHOD;
 }
 
 export type AuthenticationStatusRequest = { method: "authentication/status", params: {} }
@@ -60,9 +70,40 @@ export type LegacySetSessionModelExtRequest = {
     params: LegacySetSessionModelRequest;
 }
 
+export type GoalControlRequest = {
+    sessionId: SessionId;
+    action: "pause" | "clear";
+}
+
+export type GoalControlExtRequest = {
+    method: typeof GOAL_CONTROL_METHOD;
+    params: GoalControlRequest;
+}
+
 export async function legacySetSessionModel(
     connection: Pick<ClientContext, "request">,
     params: LegacySetSessionModelRequest,
 ): Promise<LegacySetSessionModelResponse> {
     return await connection.request<LegacySetSessionModelResponse, LegacySetSessionModelRequest>(LEGACY_SET_SESSION_MODEL_METHOD, params);
+}
+
+export type SessionSteerRequest = {
+    sessionId: SessionId;
+    prompt: ContentBlock[];
+}
+
+export type SessionSteeringResponse = {
+    outcome: "injected" | "startedNewTurn" | "failed";
+}
+
+export type SessionSteeringExtRequest = {
+    method: typeof SESSION_STEERING_METHOD;
+    params: SessionSteerRequest;
+}
+
+export async function steerSessionWithFallback(
+    connection: Pick<ClientContext, "request">,
+    params: SessionSteerRequest,
+): Promise<SessionSteeringResponse> {
+    return await connection.request<SessionSteeringResponse, SessionSteerRequest>(SESSION_STEERING_METHOD, params);
 }

@@ -55,6 +55,24 @@ describe("ResponseItemHistoryFallback", () => {
         expect(thoughtTexts(updates)).toEqual(["Need to inspect the directory."]);
     });
 
+    it("leaves user attachments to thread history", () => {
+        const updates = parseResponseItemHistoryFallback(jsonl([
+            {
+                type: "event_msg",
+                payload: {
+                    type: "user_message",
+                    message: "\n# Files mentioned by the user:\n\n## screenshot.png: /tmp/screenshot.png\n\n## My request for Codex:\nInspect the screenshot",
+                    images: [],
+                    local_images: ["/tmp/screenshot.png"],
+                },
+            },
+            functionCall("call-missing", "ls"),
+            functionCallOutput("call-missing", "Chunk ID: missing\nProcess exited with code 0\nOutput:\nREADME.md\n"),
+        ]), "terminal_output");
+
+        expect(userMessageTexts(updates)).toEqual(["Inspect the screenshot"]);
+    });
+
     it("preserves assistant message phase metadata from response items", () => {
         const updates = parseResponseItemHistoryFallback(jsonl([
             {
@@ -73,6 +91,43 @@ describe("ResponseItemHistoryFallback", () => {
         expect(agentMessageMetas(updates)).toEqual([
             { codex: { phase: "final_answer" } },
         ]);
+    });
+
+    it("restores web search results as resource links", () => {
+        const updates = parseResponseItemHistoryFallback(jsonl([
+            {
+                type: "event_msg",
+                payload: {
+                    type: "web_search_end",
+                    call_id: "web-search-1",
+                    query: "agent client protocol",
+                    action: { type: "search", query: "agent client protocol" },
+                    results: [
+                        {
+                            type: "text_result",
+                            domain: "agentclientprotocol.com",
+                            title: "Agent Client Protocol",
+                            url: "https://agentclientprotocol.com/overview/introduction",
+                            snippet: "An open protocol for communication between code editors and AI agents.",
+                        },
+                    ],
+                },
+            },
+        ]), "terminal_output", new Set(["web-search-1"]));
+
+        expect(toolCallUpdateContents(updates)).toEqual([{
+            toolCallId: "web-search-1",
+            content: [{
+                type: "content",
+                content: {
+                    type: "resource_link",
+                    uri: "https://agentclientprotocol.com/overview/introduction",
+                    name: "Agent Client Protocol",
+                    title: "Agent Client Protocol",
+                    description: "An open protocol for communication between code editors and AI agents.",
+                },
+            }],
+        }]);
     });
 
     it("marks exec command outputs without exit footers failed when they report command errors", () => {
@@ -146,10 +201,27 @@ function toolCallUpdateStatuses(updates: UpdateSessionEvent[] | null): Array<Pic
         }));
 }
 
+function toolCallUpdateContents(updates: UpdateSessionEvent[] | null): Array<{ toolCallId: string; content: ToolCallUpdate["content"] }> {
+    return (updates ?? [])
+        .filter((update): update is ToolCallUpdate => update.sessionUpdate === "tool_call_update")
+        .map((update) => ({
+            toolCallId: update.toolCallId,
+            content: update.content,
+        }));
+}
+
 function thoughtTexts(updates: UpdateSessionEvent[] | null): string[] {
     return (updates ?? [])
         .filter((update): update is Extract<UpdateSessionEvent, { sessionUpdate: "agent_thought_chunk" }> => (
             update.sessionUpdate === "agent_thought_chunk"
+        ))
+        .flatMap((update) => update.content.type === "text" ? [update.content.text] : []);
+}
+
+function userMessageTexts(updates: UpdateSessionEvent[] | null): string[] {
+    return (updates ?? [])
+        .filter((update): update is Extract<UpdateSessionEvent, { sessionUpdate: "user_message_chunk" }> => (
+            update.sessionUpdate === "user_message_chunk"
         ))
         .flatMap((update) => update.content.type === "text" ? [update.content.text] : []);
 }

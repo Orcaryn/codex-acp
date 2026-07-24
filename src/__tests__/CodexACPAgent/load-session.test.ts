@@ -5,13 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createCodexMockTestFixture, createTestModel } from "../acp-test-utils";
-import type { Model, Thread } from "../../app-server/v2";
+import type { Model, Thread, ThreadGoal } from "../../app-server/v2";
 
 describe("CodexACPAgent - loadSession", () => {
     it("should replay history during loadSession", async () => {
         const localImageDirectory = await mkdtemp(join(tmpdir(), "codex-acp-load-session-"));
         const localImagePath = join(localImageDirectory, "image.png");
+        const localAudioPath = join(localImageDirectory, "audio.mp3");
         await writeFile(localImagePath, "test image");
+        await writeFile(localAudioPath, "test audio");
 
         const fixture = createCodexMockTestFixture();
         const codexAcpAgent = fixture.getCodexAcpAgent();
@@ -95,6 +97,8 @@ describe("CodexACPAgent - loadSession", () => {
                                 { type: "image", url: "https://example.com/image.png" },
                                 { type: "image", url: "data:image/png;base64,dGVzdCBpbWFnZQ==" },
                                 { type: "localImage", path: localImagePath },
+                                { type: "audio", url: "https://example.com/audio.mp3" },
+                                { type: "localAudio", path: localAudioPath },
                                 { type: "mention", name: "notes.txt", path: "/test/project/notes.txt" },
                             ],
                         },
@@ -177,6 +181,13 @@ describe("CodexACPAgent - loadSession", () => {
                             type: "contextCompaction",
                             id: "item-context-compaction-1",
                         },
+                        {
+                            type: "subAgentActivity",
+                            id: "item-subagent-1",
+                            kind: "started",
+                            agentThreadId: "thread-child-1",
+                            agentPath: "/root/test_audit",
+                        },
                     ],
                 },
             ],
@@ -202,6 +213,17 @@ describe("CodexACPAgent - loadSession", () => {
         codexAppServerClient.threadRead = vi.fn().mockResolvedValue({
             thread: thread,
         });
+        const goal: ThreadGoal = {
+            threadId: thread.id,
+            objective: "Keep the restored migration green",
+            status: "paused",
+            tokenBudget: null,
+            tokensUsed: 42,
+            timeUsedSeconds: 46,
+            createdAt: 1710000000,
+            updatedAt: 1710000046,
+        };
+        codexAppServerClient.threadGoalGet = vi.fn().mockResolvedValue({ goal });
 
         await codexAcpAgent.initialize({ protocolVersion: 1 });
 
@@ -216,9 +238,13 @@ describe("CodexACPAgent - loadSession", () => {
             threadId: thread.id,
             includeTurns: true,
         });
+        expect(codexAppServerClient.threadGoalGet).toHaveBeenCalledWith({ threadId: thread.id });
         const replay = fixture.getAcpConnectionDump([]).replaceAll(
             pathToFileURL(localImagePath).href,
             "file:///tmp/codex-acp-load-session-image.png",
+        ).replaceAll(
+            pathToFileURL(localAudioPath).href,
+            "file:///tmp/codex-acp-load-session-audio.mp3",
         );
         await expect(`${replay}\n`).toMatchFileSnapshot(
             "data/load-session-history.json"

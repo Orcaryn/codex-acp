@@ -8,6 +8,7 @@ import type {
 import type {
     ConfigReadParams,
     ConfigReadResponse,
+    GetAccountRateLimitsResponse,
     GetAccountParams,
     GetAccountResponse,
     ListMcpServerStatusParams,
@@ -37,6 +38,8 @@ import type {
     ThreadGoalClearedNotification,
     ThreadGoalClearParams,
     ThreadGoalClearResponse,
+    ThreadGoalGetParams,
+    ThreadGoalGetResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadLoadedListParams,
@@ -47,6 +50,7 @@ import type {
     ThreadReadResponse,
     ThreadResumeParams,
     ThreadResumeResponse,
+    ThreadSettings,
     ThreadStartParams,
     ThreadStartResponse,
     ThreadUnsubscribeParams,
@@ -58,6 +62,8 @@ import type {
     TurnInterruptResponse,
     TurnStartParams,
     TurnStartResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     CommandExecutionRequestApprovalParams,
     CommandExecutionRequestApprovalResponse,
     FileChangeRequestApprovalParams,
@@ -139,6 +145,7 @@ export class CodexAppServerClient {
     private readonly threadStatusCaptures = new Map<string, Set<(status: ThreadStatus) => void>>();
     private readonly threadGoalUpdateCaptures = new Map<string, Set<(event: ThreadGoalUpdatedNotification) => void>>();
     private readonly threadGoalClearedCaptures = new Map<string, Set<() => void>>();
+    private readonly threadSettings = new Map<string, ThreadSettings>();
     private readonly staleTurnIds = new Map<string, Set<string>>();
 
     constructor(connection: MessageConnection) {
@@ -168,6 +175,9 @@ export class CodexAppServerClient {
             }
             if (isThreadGoalClearedNotification(serverNotification)) {
                 this.recordThreadGoalCleared(serverNotification.params);
+            }
+            if (serverNotification.method === "thread/settings/updated") {
+                this.threadSettings.set(serverNotification.params.threadId, serverNotification.params.threadSettings);
             }
             const routing = extractTurnRouting(serverNotification);
             if (this.handleStaleTurnNotification(serverNotification, routing)) {
@@ -310,6 +320,7 @@ export class CodexAppServerClient {
         params: ThreadGoalSetParams,
         onTurnStarted?: (turnId: string) => void,
         runtimeEffectsGraceMs = GOAL_RUNTIME_EFFECTS_GRACE_MS,
+        onGoalSet?: (goal: ThreadGoal) => void,
     ): Promise<TurnCompletedNotification | null> {
         let goalTurnId: string | null = null;
         const capturedCompletions: Array<TurnCompletedNotification> = [];
@@ -361,6 +372,7 @@ export class CodexAppServerClient {
         try {
             const goalSetResponse = await this.threadGoalSet(params);
             expectedGoal = goalSetResponse.goal;
+            onGoalSet?.(expectedGoal);
             if (capturedGoalUpdates.some(event => goalsMatch(event.goal, expectedGoal!))) {
                 goalUpdateHandled = true;
                 resolveGoalUpdateHandled();
@@ -495,6 +507,10 @@ export class CodexAppServerClient {
         return await this.sendRequest({ method: "turn/interrupt", params: params });
     }
 
+    async turnSteer(params: TurnSteerParams): Promise<TurnSteerResponse> {
+        return await this.sendRequest({ method: "turn/steer", params: params });
+    }
+
     async reviewStart(params: ReviewStartParams): Promise<ReviewStartResponse> {
         return await this.sendRequest({ method: "review/start", params: params });
     }
@@ -511,6 +527,14 @@ export class CodexAppServerClient {
 
     async threadResume(params: ThreadResumeParams): Promise<ThreadResumeResponse> {
         return await this.sendRequest({ method: "thread/resume", params: params });
+    }
+
+    getThreadSettings(threadId: string): ThreadSettings | undefined {
+        return this.threadSettings.get(threadId);
+    }
+
+    async threadSettingsUpdate(params: ExperimentalThreadSettingsUpdateParams): Promise<void> {
+        await this.connection.sendRequest("thread/settings/update", params);
     }
 
     async threadList(params: ThreadListParams): Promise<ThreadListResponse> {
@@ -539,6 +563,10 @@ export class CodexAppServerClient {
 
     async threadGoalSet(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
         return await this.sendRequest({ method: "thread/goal/set", params: params });
+    }
+
+    async threadGoalGet(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
+        return await this.sendRequest({ method: "thread/goal/get", params: params });
     }
 
     async threadGoalClear(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
@@ -587,6 +615,10 @@ export class CodexAppServerClient {
 
     async accountRead(params: GetAccountParams): Promise<GetAccountResponse> {
         return await this.sendRequest({ method: "account/read", params: params });
+    }
+
+    async accountRateLimitsRead(): Promise<GetAccountRateLimitsResponse> {
+        return await this.sendRequest({ method: "account/rateLimits/read", params: undefined });
     }
 
     //TODO create type-safe helper
@@ -946,6 +978,18 @@ type CodexRequest = DistributiveOmit<ClientRequest, "id">
 type DistributiveOmit<T, K extends keyof any> = T extends any
     ? Omit<T, K>
     : never;
+
+export interface ExperimentalThreadSettingsUpdateParams {
+    threadId: string;
+    collaborationMode: {
+        mode: "default" | "plan";
+        settings: {
+            model: string;
+            reasoning_effort: string | null;
+            developer_instructions: string | null;
+        };
+    };
+}
 
 type McpServerStartupSnapshot = {
     status: McpServerStartupState;

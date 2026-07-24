@@ -25,6 +25,7 @@ import {sanitizeMcpServerName} from "./McpServerName";
 import type {
     AccountLoginCompletedNotification,
     AccountUpdatedNotification,
+    GetAccountRateLimitsResponse,
     GetAccountResponse,
     ListMcpServerStatusResponse,
     Model,
@@ -33,13 +34,17 @@ import type {
     SkillsListResponse,
     SandboxPolicy,
     Thread,
+    ThreadGoal,
     ThreadGoalStatus,
     ThreadSourceKind,
     TurnCompletedNotification,
+    TurnSteerResponse,
     UserInput,
 } from "./app-server/v2";
 import packageJson from "../package.json";
 import type {AuthenticationStatusResponse} from "./AcpExtensions";
+import {createCodexCollaborationMode} from "./CollaborationModeConfig";
+import type {ModeKind} from "./app-server/ModeKind";
 
 /**
  * Well-known provider id for the client-configurable custom LLM gateway.
@@ -69,6 +74,7 @@ export class CodexAcpClient {
     private pendingAccountUpdated: Promise<AccountUpdatedNotification> | null = null;
     private readonly sessionNotificationQueues = new Map<string, Promise<void>>();
     private skillExtraRoots: string[] = [];
+    private configPath: string | null = null;
 
 
     constructor(codexClient: CodexAppServerClient, codexConfig?: JsonObject, modelProvider?: string) {
@@ -83,14 +89,22 @@ export class CodexAcpClient {
     };
 
     async initialize(request: acp.InitializeRequest): Promise<void> {
-        await this.codexClient.initialize({
-            capabilities: null,
+        const response = await this.codexClient.initialize({
+            capabilities: {
+                experimentalApi: true,
+                requestAttestation: false,
+            },
             clientInfo: {
                 name: request.clientInfo?.name ?? this.defaultClientInfo.name,
                 version: request.clientInfo?.version ?? this.defaultClientInfo.version,
                 title: request.clientInfo?.title ?? this.defaultClientInfo.title,
             }
         });
+        this.configPath = response?.codexHome ?? null;
+    }
+
+    getHomePath(): string | null {
+        return this.configPath;
     }
 
     async authenticate(authRequest: acp.AuthenticateRequest): Promise<Boolean> {
@@ -187,6 +201,10 @@ export class CodexAcpClient {
                     name: "amazonBedrock",
                 };
         }
+    }
+
+    async getAccountRateLimits(): Promise<GetAccountRateLimitsResponse> {
+        return await this.codexClient.accountRateLimitsRead();
     }
 
     async getCurrentModelProvider(): Promise<string | null> {
@@ -330,6 +348,7 @@ export class CodexAcpClient {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
             models: codexModels,
+            collaborationMode: this.getCollaborationMode(response.thread.id),
             modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
@@ -357,6 +376,7 @@ export class CodexAcpClient {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
             models: codexModels,
+            collaborationMode: this.getCollaborationMode(response.thread.id),
             modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             thread: historyResponse.thread,
@@ -383,6 +403,7 @@ export class CodexAcpClient {
             sessionId: response.thread.id,
             currentModelId: currentModelId,
             models: codexModels,
+            collaborationMode: this.getCollaborationMode(response.thread.id),
             modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
@@ -417,6 +438,11 @@ export class CodexAcpClient {
         await this.codexClient.runCompact({threadId: sessionId});
     }
 
+    async getGoal(sessionId: string): Promise<ThreadGoal | null> {
+        const response = await this.codexClient.threadGoalGet({threadId: sessionId});
+        return response?.goal ?? null;
+    }
+
     async setGoal(
         sessionId: string,
         objective: string,
@@ -429,11 +455,18 @@ export class CodexAcpClient {
         }, onTurnStarted);
     }
 
-    async setGoalStatus(sessionId: string, status: ThreadGoalStatus): Promise<void> {
+    async setGoalStatus(sessionId: string, status: ThreadGoalStatus): Promise<ThreadGoal> {
+        let updatedGoal: ThreadGoal | null = null;
         await this.codexClient.runGoalSet({
             threadId: sessionId,
             status,
+        }, undefined, undefined, (goal) => {
+            updatedGoal = goal;
         });
+        if (updatedGoal === null) {
+            throw new Error(`Goal update for session ${sessionId} returned no goal`);
+        }
+        return updatedGoal;
     }
 
     async resumeGoal(
@@ -497,11 +530,16 @@ export class CodexAcpClient {
 
     private async getConfigMcpServerNames(projectPath: string): Promise<Set<string>> {
         const response = await this.codexClient.configRead({ includeLayers: true, cwd: projectPath });
-        const mcpServers = response?.config?.["mcp_servers"];
-        if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+        const effectiveMcpServers = response?.config?.["mcp_servers"];
+        const configLayers = response?.layers ?? [];
+        const layerMcpServers = configLayers.map(layer => {
+            return isJsonObject(layer.config) ? layer.config["mcp_servers"] : undefined;
+        });
+        const configuredMcpServers = [effectiveMcpServers, ...layerMcpServers].filter(isJsonObject);
+        if (configuredMcpServers.length === 0) {
             return new Set();
         }
-        return new Set(Object.keys(mcpServers));
+        return new Set(configuredMcpServers.flatMap(server => Object.keys(server)));
     }
 
     getModelProvider(): string | null {
@@ -679,6 +717,17 @@ export class CodexAcpClient {
         }, onTurnStarted);
     }
 
+    async setCollaborationMode(sessionId: string, mode: ModeKind, currentModelId: string): Promise<void> {
+        await this.codexClient.threadSettingsUpdate({
+            threadId: sessionId,
+            collaborationMode: createCodexCollaborationMode(mode, currentModelId),
+        });
+    }
+
+    private getCollaborationMode(sessionId: string): ModeKind {
+        return this.codexClient.getThreadSettings(sessionId)?.collaborationMode.mode ?? "default";
+    }
+
     resolveTurnInterrupted(params: { threadId: string, turnId: string }): void {
         this.codexClient.resolveTurnInterrupted(params.threadId, params.turnId);
     }
@@ -801,6 +850,14 @@ export class CodexAcpClient {
         });
     }
 
+    async steerTurn(params: { threadId: string, turnId: string, prompt: acp.ContentBlock[] }): Promise<TurnSteerResponse> {
+        return await this.codexClient.turnSteer({
+            threadId: params.threadId,
+            expectedTurnId: params.turnId,
+            input: buildPromptItems(params.prompt),
+        });
+    }
+
     async fetchAvailableModels(): Promise<Model[]> {
         const models: Model[] = [];
         let cursor: string | null = null;
@@ -845,6 +902,7 @@ export type SessionMetadata = {
     sessionId: string,
     currentModelId: string,
     models: Model[],
+    collaborationMode: ModeKind,
     modelProvider?: string | null,
     currentServiceTier?: ServiceTier | null,
     additionalDirectories: string[],
