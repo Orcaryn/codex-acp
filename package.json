@@ -54,6 +54,9 @@
   "author": "Agent Client Protocol",
   "license": "Apache-2.0",
   "type": "module",
+  "overrides": {
+    "@hono/node-server": "^2.0.5"
+  },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
