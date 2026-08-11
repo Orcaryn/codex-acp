@@ -3,7 +3,11 @@ import type {
     FuzzyFileSearchSessionUpdatedNotification,
     ServerNotification
 } from "./app-server";
-import type {SessionState} from "./CodexAcpServer";
+import type {
+    SessionFailureAction,
+    SessionFailureCategory,
+    SessionState,
+} from "./CodexAcpServer";
 import {type PlanEntry, RequestError} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
 import type {
@@ -27,10 +31,11 @@ import type {
     ThreadGoalClearedNotification,
     ThreadGoalUpdatedNotification,
     ThreadTokenUsageUpdatedNotification,
+    Turn,
     TurnPlanUpdatedNotification,
     WarningNotification
 } from "./app-server/v2";
-import type { McpStartupCompleteEvent } from "./app-server";
+import type { McpStartupCompleteEvent } from "./app-server/McpStartupCompleteEvent";
 import {toTokenCount} from "./TokenCount";
 import {
     commandExecutionUsesTerminalOutput,
@@ -64,41 +69,268 @@ import {
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
 } from "./ContentChunks";
-import {sameThreadGoalSnapshot, toThreadGoalSnapshot} from "./ThreadGoalSnapshot";
+import {sameThreadGoalSnapshot, type ThreadGoalSnapshot, toThreadGoalSnapshot} from "./ThreadGoalSnapshot";
+import {logger} from "./Logger";
+import {randomUUID} from "node:crypto";
+import {
+    AIR_EXTENSION_VERSION,
+    AIR_EXTENSION_VERSION_KEY,
+    AIR_META_KEY,
+    AIR_SESSION_FAILURE_KEY,
+    JETBRAINS_META_KEY,
+} from "./AirExtension";
 
 export { stripShellPrefix };
 
+export type CompletedPlan = {
+    itemId: string;
+    text: string;
+};
+
+const SESSION_FAILURE_PRESENTATION: Record<SessionFailureCategory, {
+    message: string;
+    retryable: boolean;
+    actions: SessionFailureAction[];
+}> = {
+    transport_lost: {message: "Connection to Codex was lost.", retryable: true, actions: ["reconnect", "retry"]},
+    auth_required: {message: "Sign in to continue using Codex.", retryable: false, actions: ["login"]},
+    rate_limited: {message: "The Codex rate limit was reached.", retryable: true, actions: ["retry"]},
+    quota_exhausted: {message: "The Codex usage quota is exhausted.", retryable: false, actions: ["new_session"]},
+    overloaded: {message: "Codex is temporarily overloaded.", retryable: true, actions: ["retry"]},
+    context_exhausted: {message: "This conversation has reached its context limit.", retryable: false, actions: ["new_turn"]},
+    budget_exhausted: {message: "This session has reached its usage budget.", retryable: false, actions: ["new_session"]},
+    policy_denied: {message: "The request was blocked by provider policy.", retryable: false, actions: []},
+    bad_request: {message: "Codex could not process this request.", retryable: false, actions: ["new_turn"]},
+    provider_error: {message: "The model provider reported an error.", retryable: true, actions: ["retry"]},
+    internal_error: {message: "Codex encountered an internal error.", retryable: true, actions: ["retry"]},
+};
+
+type StringCodexErrorInfo = Extract<CodexErrorInfo, string>;
+type StructuredCodexErrorInfo = Exclude<CodexErrorInfo, string>;
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+type StructuredCodexErrorKind = KeysOfUnion<StructuredCodexErrorInfo>;
+
+/**
+ * Exhaustive against the generated app-server union: a schema update cannot silently fall through
+ * to provider_error. The runtime lookup still has a fallback for a newer app-server talking to an
+ * older codex-acp build.
+ */
+const STRING_CODEX_ERROR_CATEGORIES = {
+    contextWindowExceeded: "context_exhausted",
+    sessionBudgetExceeded: "budget_exhausted",
+    usageLimitExceeded: "quota_exhausted",
+    serverOverloaded: "overloaded",
+    cyberPolicy: "policy_denied",
+    internalServerError: "internal_error",
+    unauthorized: "auth_required",
+    badRequest: "bad_request",
+    threadRollbackFailed: "provider_error",
+    sandboxError: "provider_error",
+    other: "provider_error",
+} satisfies Record<StringCodexErrorInfo, SessionFailureCategory>;
+
+const STRUCTURED_CODEX_ERROR_CATEGORIES = {
+    httpConnectionFailed: "transport_lost",
+    responseStreamConnectionFailed: "transport_lost",
+    responseStreamDisconnected: "transport_lost",
+    responseTooManyFailedAttempts: "transport_lost",
+    activeTurnNotSteerable: "provider_error",
+} satisfies Record<StructuredCodexErrorKind, SessionFailureCategory>;
+
 export class CodexEventHandler {
 
-    private readonly connection: AcpClientConnection;
+    private static readonly PLAN_UPDATE_INTERVAL_MS = 150;
+
     private readonly sessionState: SessionState;
+    private readonly supportsPlanUpdates: boolean;
+    private readonly supportsTypedSessionFailures: boolean;
+    private readonly sessionFailureEpoch: string;
+    private readonly pendingErrors: ErrorNotification[] = [];
     private failure: RequestError | null = null;
+    private completedPlan: CompletedPlan | null = null;
     private readonly activeFuzzyFileSearchSessions = new Set<string>();
     private readonly activeGuardianApprovalReviews = new Set<string>();
     private readonly activeImageGenerationItems = new Set<string>();
     private readonly emittedImageViewItems = new Set<string>();
     private readonly planDeltaTextByItemId = new Map<string, string>();
+    private readonly pendingPlanItemIds = new Set<string>();
+    private readonly lastEmittedPlanTextByItemId = new Map<string, string>();
+    private readonly session: ACPSessionConnection;
+    private planUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+    private planUpdateChain: Promise<void> = Promise.resolve();
+    private disposed = false;
     private readonly seenReasoningDeltaItemIds = new Set<string>();
     private readonly terminalCommandIds = new Set<string>();
     private readonly terminalCommandOutputIds = new Set<string>();
     private readonly agentMessagePhases = new Map<string, string | null>();
     private readonly activeSubAgentActivities = new Set<string>();
 
-    constructor(connection: AcpClientConnection, sessionState: SessionState) {
-        this.connection = connection;
+    constructor(
+        connection: AcpClientConnection,
+        sessionState: SessionState,
+        supportsPlanUpdates = false,
+        supportsTypedSessionFailures = false,
+        sessionFailureEpoch: string = randomUUID(),
+    ) {
         this.sessionState = sessionState;
+        this.supportsPlanUpdates = supportsPlanUpdates;
+        this.supportsTypedSessionFailures = supportsTypedSessionFailures;
+        this.sessionFailureEpoch = sessionFailureEpoch;
+        this.session = new ACPSessionConnection(connection, sessionState.sessionId);
     }
 
     getFailure(): RequestError | null {
         return this.failure;
     }
 
+    getTerminalSessionFailureMeta(
+        turnId: string | null,
+        allowUnattributed = false,
+    ): Record<string, unknown> | null {
+        const failure = this.sessionState.sessionFailure;
+        if (!this.supportsTypedSessionFailures
+            || failure?.phase !== "active"
+            || (failure.turnId === undefined
+                ? !allowUnattributed
+                : turnId === null || failure.turnId !== turnId)) {
+            return null;
+        }
+        return this.createSessionFailureMeta(failure);
+    }
+
+    recordSyntheticTerminalFailure(category: SessionFailureCategory, turnId: string | null): void {
+        this.recordSessionFailure(category, turnId ?? undefined);
+    }
+
+    /**
+     * Handles notifications after the prompt-local handler has been disposed. The app-server subscription
+     * remains installed until the ACP session closes, so terminal errors need a durable session-level path
+     * instead of entering a turn buffer that will never be flushed.
+     */
+    async handleSessionScopedNotification(notification: ServerNotification): Promise<void> {
+        if (notification.method !== "error") {
+            await this.handleNotification(notification);
+            return;
+        }
+        if (!this.supportsTypedSessionFailures) {
+            // Preserve the legacy behavior for clients that did not negotiate typed failures.
+            await this.handleNotification(notification);
+            return;
+        }
+        if (notification.params.willRetry) {
+            await this.session.update(this.createSafeErrorDiagnostic(notification.params));
+            return;
+        }
+        const failure = this.recordSessionFailure(
+            this.sessionFailureCategory(notification.params.error.codexErrorInfo),
+            undefined,
+        );
+        await this.session.update(this.createSessionFailureUpdate(failure));
+    }
+
+    async flushPendingErrors(): Promise<void> {
+        if (this.sessionState.currentTurnId === null || this.pendingErrors.length === 0) {
+            return;
+        }
+        const errors = this.pendingErrors.splice(0);
+        for (const error of errors) {
+            const update = await this.createErrorEvent(error);
+            if (update) {
+                await this.session.update(update);
+            }
+        }
+    }
+
+    async flushPendingErrorsAsSessionScoped(): Promise<void> {
+        if (!this.supportsTypedSessionFailures || this.pendingErrors.length === 0) {
+            return;
+        }
+        const errors = this.pendingErrors.splice(0);
+        for (const error of errors) {
+            await this.handleSessionScopedNotification({method: "error", params: error});
+        }
+    }
+
+    async clearSessionFailure(): Promise<void> {
+        const active = this.sessionState.sessionFailure;
+        if (!this.supportsTypedSessionFailures || active?.phase !== "active") {
+            return;
+        }
+        const cleared = {
+            ...active,
+            revision: active.revision + 1,
+            phase: "cleared" as const,
+        };
+        await this.session.update(this.createSessionFailureUpdate(cleared));
+        this.sessionState.sessionFailure = cleared;
+    }
+
+    async handleFailedTurn(turn: Turn): Promise<void> {
+        const activeFailure = this.sessionState.sessionFailure;
+        if (!this.supportsTypedSessionFailures
+            || turn.status !== "failed"
+            || this.failure !== null
+            || (activeFailure?.phase === "active" && activeFailure.turnId === turn.id)) {
+            return;
+        }
+        const error = turn.error ?? {
+            message: "Turn failed",
+            codexErrorInfo: null,
+            additionalDetails: null,
+        };
+        this.recordTypedSessionFailure({
+            threadId: this.sessionState.sessionId,
+            turnId: turn.id,
+            willRetry: false,
+            error,
+        });
+    }
+
+    takeCompletedPlan(): CompletedPlan | null {
+        const plan = this.completedPlan;
+        this.completedPlan = null;
+        return plan;
+    }
+
     async handleNotification(notification: ServerNotification) {
-        const session = new ACPSessionConnection(this.connection, this.sessionState.sessionId);
+        await this.flushPendingErrors();
         const updateEvent = await this.createUpdateEvent(notification);
         if (updateEvent) {
-            await session.update(updateEvent);
+            await this.session.update(updateEvent);
         }
+    }
+
+    async flushPendingPlanUpdates(): Promise<void> {
+        this.cancelPlanUpdateTimer();
+        do {
+            const itemIds = [...this.pendingPlanItemIds];
+            this.pendingPlanItemIds.clear();
+            await Promise.all(itemIds.map(itemId => {
+                const text = this.planDeltaTextByItemId.get(itemId) ?? "";
+                return text.length > 0
+                    ? this.enqueuePlanSnapshot(itemId, text)
+                    : Promise.resolve();
+            }));
+            await this.planUpdateChain;
+        } while (this.pendingPlanItemIds.size > 0);
+    }
+
+    async dispose(): Promise<void> {
+        if (this.disposed) return;
+        await this.flushPendingPlanUpdates();
+        if (this.pendingErrors.length > 0) {
+            logger.log("Discarding app-server errors that arrived before a turn started", {
+                sessionId: this.sessionState.sessionId,
+                count: this.pendingErrors.length,
+                turnIds: this.pendingErrors.map(error => error.turnId),
+            });
+            this.pendingErrors.splice(0);
+        }
+        this.disposed = true;
+        this.cancelPlanUpdateTimer();
+        this.pendingPlanItemIds.clear();
+        this.planDeltaTextByItemId.clear();
+        this.lastEmittedPlanTextByItemId.clear();
     }
 
     private async createUpdateEvent(notification: ServerNotification): Promise<UpdateSessionEvent | null> {
@@ -124,8 +356,11 @@ export class CodexEventHandler {
                 return await this.createErrorEvent(notification.params);
             case "turn/started":
                 this.sessionState.currentTurnId = notification.params.turn.id;
+                await this.flushPendingErrors();
                 return null;
             case "turn/completed":
+                await this.flushPendingPlanUpdates();
+                this.clearPlanTurnState();
                 this.sessionState.currentTurnId = null;
                 return null;
             case "thread/tokenUsage/updated":
@@ -272,9 +507,7 @@ export class CodexEventHandler {
         }
         this.sessionState.currentGoal = goalSnapshot;
 
-        return this.createCodexSessionInfoUpdate({
-            goal: goalSnapshot,
-        });
+        return this.createGoalSessionInfoUpdate(goalSnapshot);
     }
 
     private createThreadGoalClearedEvent(_event: ThreadGoalClearedNotification): UpdateSessionEvent | null {
@@ -284,9 +517,14 @@ export class CodexEventHandler {
         }
         this.sessionState.currentGoal = null;
 
-        return this.createCodexSessionInfoUpdate({
-            goal: null,
-        });
+        return this.createGoalSessionInfoUpdate(null);
+    }
+
+    private createGoalSessionInfoUpdate(goal: ThreadGoalSnapshot | null): UpdateSessionEvent {
+        return {
+            sessionUpdate: "session_info_update",
+            _meta: {goal},
+        };
     }
 
     private createReasoningDeltaEvent(
@@ -296,12 +534,17 @@ export class CodexEventHandler {
         return this.createAgentThoughtEvent(event.delta, event.itemId);
     }
 
-    private createPlanDeltaEvent(event: PlanDeltaNotification): UpdateSessionEvent | null {
+    private createPlanDeltaEvent(event: PlanDeltaNotification): null {
         if (event.delta.length === 0) {
             return null;
         }
         const text = this.planDeltaTextByItemId.get(event.itemId) ?? "";
-        this.planDeltaTextByItemId.set(event.itemId, text + event.delta);
+        const updatedText = text + event.delta;
+        this.planDeltaTextByItemId.set(event.itemId, updatedText);
+        if (this.supportsPlanUpdates) {
+            this.pendingPlanItemIds.add(event.itemId);
+            this.schedulePlanUpdate();
+        }
         return null;
     }
 
@@ -403,8 +646,7 @@ export class CodexEventHandler {
                 return null;
             case "plan": {
                 const deltaText = this.planDeltaTextByItemId.get(event.item.id) ?? "";
-                this.planDeltaTextByItemId.delete(event.item.id);
-                return this.createCompletedPlanEvent(event.item, deltaText);
+                return await this.createCompletedPlanEvent(event.item, deltaText);
             }
             case "exitedReviewMode":
                 return this.createExitedReviewModeEvent(event.item);
@@ -439,15 +681,70 @@ export class CodexEventHandler {
         return this.createAgentThoughtEvent(text, item.id);
     }
 
-    private createCompletedPlanEvent(
+    private async createCompletedPlanEvent(
         item: ThreadItem & { type: "plan" },
         deltaText: string,
-    ): UpdateSessionEvent | null {
+    ): Promise<UpdateSessionEvent | null> {
         const text = item.text.length > 0 ? item.text : deltaText;
+        this.pendingPlanItemIds.delete(item.id);
+        if (this.pendingPlanItemIds.size === 0) {
+            this.cancelPlanUpdateTimer();
+        }
+        this.planDeltaTextByItemId.delete(item.id);
         if (text.length === 0) {
             return null;
         }
+        this.completedPlan = {itemId: item.id, text};
+        if (this.supportsPlanUpdates) {
+            await this.enqueuePlanSnapshot(item.id, text);
+            return null;
+        }
         return this.createPlanTextEvent(text, item.id);
+    }
+
+    private schedulePlanUpdate(): void {
+        if (this.disposed || this.planUpdateTimer !== null) return;
+        this.planUpdateTimer = setTimeout(() => {
+            this.planUpdateTimer = null;
+            void this.flushPendingPlanUpdates().catch(error => {
+                logger.error("Failed to flush throttled plan updates", error);
+            });
+        }, CodexEventHandler.PLAN_UPDATE_INTERVAL_MS);
+    }
+
+    private cancelPlanUpdateTimer(): void {
+        if (this.planUpdateTimer === null) return;
+        clearTimeout(this.planUpdateTimer);
+        this.planUpdateTimer = null;
+    }
+
+    private enqueuePlanSnapshot(itemId: string, text: string): Promise<void> {
+        const send = async () => {
+            if (this.lastEmittedPlanTextByItemId.get(itemId) === text) return;
+            await this.session.update(this.createPlanUpdateEvent(text, itemId));
+            this.lastEmittedPlanTextByItemId.set(itemId, text);
+        };
+        const result = this.planUpdateChain.then(send);
+        this.planUpdateChain = result.catch(() => {});
+        return result;
+    }
+
+    private clearPlanTurnState(): void {
+        this.cancelPlanUpdateTimer();
+        this.pendingPlanItemIds.clear();
+        this.planDeltaTextByItemId.clear();
+        this.lastEmittedPlanTextByItemId.clear();
+    }
+
+    private createPlanUpdateEvent(text: string, planId: string): UpdateSessionEvent {
+        return {
+            sessionUpdate: "plan_update",
+            plan: {
+                type: "markdown",
+                planId,
+                content: text,
+            },
+        };
     }
 
     private createPlanTextEvent(text: string, messageId: string): UpdateSessionEvent {
@@ -599,9 +896,29 @@ export class CodexEventHandler {
         }
     }
 
-    private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent> {
+    private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent | null> {
         const error = params.error.codexErrorInfo;
+        if (this.sessionState.currentTurnId === null) {
+            this.pendingErrors.push(params);
+            logger.log("Buffered app-server error until the active turn is known", {
+                sessionId: this.sessionState.sessionId,
+                turnId: params.turnId,
+                willRetry: params.willRetry,
+            });
+            return null;
+        }
+        if (params.turnId !== this.sessionState.currentTurnId) {
+            if (this.supportsTypedSessionFailures) {
+                return this.createSafeErrorDiagnostic(params);
+            }
+            return this.createCodexSessionInfoUpdate({
+                error: {...params.error, turnId: params.turnId, willRetry: params.willRetry},
+            });
+        }
         if (params.willRetry) {
+            if (this.supportsTypedSessionFailures) {
+                return this.createSafeErrorDiagnostic(params);
+            }
             return this.createCodexSessionInfoUpdate({
                 error: {
                     ...params.error,
@@ -609,7 +926,14 @@ export class CodexEventHandler {
                     willRetry: true,
                 },
             });
-        } else if (error === "usageLimitExceeded") {
+        }
+        if (this.supportsTypedSessionFailures) {
+            // app-server guarantees willRetry=false interrupts this turn; the terminal failure is
+            // returned once on PromptResponse._meta rather than duplicated as a session update.
+            this.recordTypedSessionFailure(params);
+            return null;
+        }
+        if (error === "usageLimitExceeded") {
             this.failure = RequestError.internalError(
                 this.createTurnErrorData(params.error),
             );
@@ -621,23 +945,96 @@ export class CodexEventHandler {
         return createAgentTextMessageChunk(`${params.error.message}\n\n`);
     }
 
+    private createSafeErrorDiagnostic(params: ErrorNotification): UpdateSessionEvent {
+        const category = this.sessionFailureCategory(params.error.codexErrorInfo);
+        return this.createCodexSessionInfoUpdate({
+            error: {
+                category,
+                message: SESSION_FAILURE_PRESENTATION[category].message,
+                turnId: params.turnId,
+                willRetry: params.willRetry,
+            },
+        });
+    }
+
+    private recordTypedSessionFailure(params: ErrorNotification): void {
+        const category = this.sessionFailureCategory(params.error.codexErrorInfo);
+        this.recordSessionFailure(category, params.turnId);
+    }
+
+    private recordSessionFailure(
+        category: SessionFailureCategory,
+        turnId: string | undefined,
+    ): NonNullable<SessionState["sessionFailure"]> {
+        const presentation = SESSION_FAILURE_PRESENTATION[category];
+        const previous = this.sessionState.sessionFailure;
+        const id = previous?.phase === "active"
+            ? previous.id
+            : turnId === undefined
+                ? `${this.sessionState.sessionId}:error:${this.sessionFailureEpoch}`
+                : `${turnId}:error`;
+        const failure: NonNullable<SessionState["sessionFailure"]> = {
+            id,
+            revision: previous?.id === id ? previous.revision + 1 : 1,
+            phase: "active" as const,
+            category,
+            source: "codex",
+            safeMessage: presentation.message,
+            retryable: presentation.retryable,
+            actions: presentation.actions,
+            ...(turnId === undefined ? {} : {turnId}),
+        };
+        this.sessionState.sessionFailure = failure;
+        return failure;
+    }
+
+    private createSessionFailureMeta(
+        failure: NonNullable<SessionState["sessionFailure"]>,
+    ): Record<string, unknown> {
+        return {
+            [JETBRAINS_META_KEY]: {
+                [AIR_META_KEY]: {
+                    [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
+                    [AIR_SESSION_FAILURE_KEY]: failure,
+                },
+            },
+        };
+    }
+
+    private createSessionFailureUpdate(
+        failure: NonNullable<SessionState["sessionFailure"]>,
+    ): UpdateSessionEvent {
+        return {
+            sessionUpdate: "session_info_update",
+            _meta: this.createSessionFailureMeta(failure),
+        };
+    }
+
+    private sessionFailureCategory(error: CodexErrorInfo | null): SessionFailureCategory {
+        if (this.isAuthenticationRequiredError(error)) return "auth_required";
+        if (this.getHttpStatusCode(error) === 429) return "rate_limited";
+        if (typeof error === "string") {
+            return STRING_CODEX_ERROR_CATEGORIES[error] ?? "provider_error";
+        }
+        if (error !== null) {
+            for (const kind of Object.keys(STRUCTURED_CODEX_ERROR_CATEGORIES) as StructuredCodexErrorKind[]) {
+                if (kind in error) {
+                    return STRUCTURED_CODEX_ERROR_CATEGORIES[kind] ?? "provider_error";
+                }
+            }
+        }
+        return "provider_error";
+    }
+
     private isAuthenticationRequiredError(error: CodexErrorInfo | null): boolean {
         return error === "unauthorized" || this.getHttpStatusCode(error) === 401;
     }
 
     private getHttpStatusCode(error: CodexErrorInfo | null): number | null {
-        if (error !== null && typeof error === "object") {
-            if ("httpConnectionFailed" in error) {
-                return error.httpConnectionFailed.httpStatusCode;
-            } else if ("responseStreamConnectionFailed" in error) {
-                return error.responseStreamConnectionFailed.httpStatusCode;
-            } else if ("responseStreamDisconnected" in error) {
-                return error.responseStreamDisconnected.httpStatusCode;
-            } else if ("responseTooManyFailedAttempts" in error) {
-                return error.responseTooManyFailedAttempts.httpStatusCode;
-            }
-        }
-        return null;
+        if (error === null || typeof error !== "object") return null;
+        const details: unknown = Object.values(error)[0];
+        if (details === null || typeof details !== "object" || !("httpStatusCode" in details)) return null;
+        return typeof details.httpStatusCode === "number" ? details.httpStatusCode : null;
     }
 
     private createTurnErrorData(error: ErrorNotification["error"]): {
