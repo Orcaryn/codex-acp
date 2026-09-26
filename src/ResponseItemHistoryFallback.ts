@@ -7,6 +7,7 @@ import type { CommandAction, Thread, ThreadItem } from "./app-server/v2";
 import { createCommandActionEvent } from "./CodexToolCallMapper";
 import { createTerminalOutputMeta, type TerminalOutputMode } from "./TerminalOutputMode";
 import { createAgentMessageChunk, createCodexMessagePhaseMeta, createUserMessageChunk, visibleUserMessageText } from "./ContentChunks";
+import { functionToolName } from "./ToolCallName";
 
 type JsonRecord = Record<string, unknown>;
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
@@ -181,6 +182,7 @@ function toolCallIdFromThreadItem(item: ThreadItem): string | null {
             return item.id;
         case "userMessage":
         case "hookPrompt":
+        case "functionCallOutput":
         case "agentMessage":
         case "plan":
         case "reasoning":
@@ -390,6 +392,7 @@ function createFunctionCallUpdate(item: JsonRecord): LegacyFunctionCallUpdate | 
     if (!toolCallId || !name) {
         return null;
     }
+    const toolName = functionToolName(name, stringValue(item["namespace"]));
 
     const isExecCommand = name === "exec_command";
     const args = parseFunctionArguments(item["arguments"]);
@@ -398,7 +401,10 @@ function createFunctionCallUpdate(item: JsonRecord): LegacyFunctionCallUpdate | 
     const commandAction = command ? inferCommandAction(command, cwd) : null;
     if (commandAction) {
         return {
-            update: createCommandActionEvent(toolCallId, "inProgress", cwd, commandAction),
+            update: {
+                ...createCommandActionEvent(toolCallId, "inProgress", cwd, commandAction),
+                name: toolName,
+            },
             usesTerminal: false,
             isExecCommand,
         };
@@ -407,6 +413,7 @@ function createFunctionCallUpdate(item: JsonRecord): LegacyFunctionCallUpdate | 
     const update: AcpToolCallEvent = {
         sessionUpdate: "tool_call",
         toolCallId,
+        name: toolName,
         kind: toolKindForFunctionCall(name),
         title: titleForFunctionCall(name, args),
         status: "in_progress",

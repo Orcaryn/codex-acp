@@ -9,6 +9,7 @@ describe("Codex account rate limits extension", () => {
         const rateLimits: RateLimitSnapshot = {
             limitId: "codex",
             limitName: "Codex",
+            normalModelSlug: null,
             primary: {
                 usedPercent: 20,
                 windowDurationMins: 300,
@@ -25,6 +26,9 @@ describe("Codex account rate limits extension", () => {
             rateLimits,
             rateLimitsByLimitId: null,
             rateLimitResetCredits: null,
+            ordinaryUsageAllowed: true,
+            accountId: null,
+            rateLimitUpsell: null,
         };
         vi.spyOn(fixture.getCodexAppServerClient(), "accountRateLimitsRead").mockResolvedValue(response);
 
